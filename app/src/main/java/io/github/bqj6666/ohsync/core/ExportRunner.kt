@@ -28,8 +28,14 @@ object ExportRunner {
 
     private const val TAG = "OHSyncExport"
 
-    /** 单次导出的时间上限。全量重建时 HC 分页会明显变慢（实测 115 秒/类型），给足余量。 */
-    private const val TIMEOUT_MS = 15 * 60_000L
+    /**
+     * 单次导出的时间上限。
+     *
+     * 给得很宽是因为：**首次**构建缓存要把整个窗口从 HC 读一遍，而 HC 的分页速度
+     * 波动极大（实测同一个查询，快时 8 毫秒/页、慢时 3 秒/页，像是被限流）。
+     * 十年的窗口页数有四五百页，最坏情况要十几分钟。缓存建成之后就只读最近几天了。
+     */
+    private const val TIMEOUT_MS = 30 * 60_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -109,8 +115,8 @@ object ExportRunner {
         val hc = HcClient(c)
         if (hc.client == null) return "导出失败：Health Connect 不可用"
 
-        // 用**导出窗口**而不是同步窗口：同步可以把「全部」都补进 HC，导出不必跟着跑那么远
-        val window = Settings.exportWindowDays(c)
+        // 导出窗口默认跟随「回填范围」—— 用户把回填设成「全部」，给出去的也应该是全部
+        val window = Settings.effectiveExportWindowDays(c)
         val otherSources = Settings.exportOtherSources(c)
         val offsetSec = SyncExport.localOffsetSeconds
 

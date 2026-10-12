@@ -223,25 +223,33 @@ object Settings {
     }
 
     /**
-     * 导出窗口（天）。**与同步窗口分开**。
+     * 导出窗口（天）。**与回填范围分开，但默认跟随它**。
      *
-     * 同步窗口可以是「全部」（把 2016 年以来的记录都补进 Health Connect），但导出不该
-     * 跟着跑那么远：实测跟着 10 年窗口导，JSON 1 MB、耗时几分钟，而且中途还卡住过一次。
-     * 默认 365 天，与原脚本的窗口一致，下游的覆盖率口径也不用改。
+     * 回填范围决定把多少历史补进 Health Connect；导出窗口决定那份 JSON 覆盖多久。
+     * 两者分开是因为「全部」回填可能要读十年，导出跟着跑会又慢又大 —— 但用户选的
+     * 是「全部」，默认就该给全部，所以默认值 0 = 「跟随回填范围」。
+     * 想收窄再单独选具体天数。
      */
     fun exportWindowDays(context: Context): Int =
-        prefs(context).getInt(KEY_EXPORT_WINDOW, DEFAULT_EXPORT_WINDOW)
+        prefs(context).getInt(KEY_EXPORT_WINDOW, EXPORT_FOLLOW_SYNC)
 
     fun setExportWindowDays(context: Context, days: Int) {
         prefs(context).edit().putInt(KEY_EXPORT_WINDOW, days).apply()
     }
 
-    /** 导出窗口选项（比同步窗口少一档"全部"：导出不需要那么远）。 */
-    val EXPORT_WINDOW_OPTIONS: List<Pair<Int, String>> =
-        WINDOW_OPTIONS.filter { it.first <= 730 }
+    /** 实际生效的导出窗口天数：选了「跟随」就用回填范围。 */
+    fun effectiveExportWindowDays(context: Context): Int =
+        exportWindowDays(context).takeIf { it > 0 } ?: windowDays(context)
 
-    /** 导出窗口默认 1 年，与原脚本一致。 */
-    const val DEFAULT_EXPORT_WINDOW = 365
+    /**
+     * 导出窗口选项。第一项是「跟随回填范围」（值 0），其余与回填范围同一套 ——
+     * 包含「全部」，因为选了全部回填就该给全部导出。
+     */
+    val EXPORT_WINDOW_OPTIONS: List<Pair<Int, String>> =
+        listOf(EXPORT_FOLLOW_SYNC to "跟随回填范围") + WINDOW_OPTIONS
+
+    /** 导出窗口的默认值：跟随回填范围。 */
+    const val EXPORT_FOLLOW_SYNC = 0
 
     /** 两次自动上传之间的最小间隔（分钟）。 */
     const val DEFAULT_EXPORT_MIN_GAP = 30

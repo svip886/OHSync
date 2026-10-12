@@ -492,8 +492,18 @@ private fun WebDavCard(status: SyncStatus, readMissing: Int, onAuthRead: () -> U
                 onSelect = { exportWindow = it; Settings.setExportWindowDays(ctx, it) },
             )
             Text(
-                "与上面的「回填时间范围」相互独立：回填可以把「全部」都同步进 Health Connect，" +
-                    "但导出不必跟着跑那么远（实测跟着 10 年导出是 1 MB / 好几分钟）。",
+                if (exportWindow <= 0) {
+                    "默认跟随「回填时间范围」，也就是上面选的全部/一年等档位会一并生效 —— " +
+                        "回填补了多少，导出就给多少。"
+                } else {
+                    "已单独指定导出窗口，不跟随回填范围（当前回填范围：${Settings.windowLabel(ctx)}）。"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            Text(
+                "首次构建要读整个窗口，选「全部」时可能要好几分钟；之后每次只重读最近几天，" +
+                    "与本地缓存合并后传出去的仍是全量。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline,
             )
