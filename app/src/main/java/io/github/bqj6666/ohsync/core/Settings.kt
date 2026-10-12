@@ -15,6 +15,8 @@ object Settings {
     private const val KEY_WINDOW = "window_days"
     private const val KEY_LAST_SYNC = "last_incremental_sync_at"
     private const val KEY_KEEP_ALIVE = "keep_alive"
+    private const val KEY_BACKFILL_BEFORE = "backfill_before"
+    private const val KEY_LAST_RESTART = "last_health_restart_at"
 
     /** 同步间隔选项。0 表示只在手动点「立即同步」时才推。 */
     val INTERVAL_OPTIONS: List<Pair<Int, String>> = listOf(
@@ -91,6 +93,25 @@ object Settings {
     fun setKeepAlive(context: Context, on: Boolean) {
         prefs(context).edit().putBoolean(KEY_KEEP_ALIVE, on).apply()
         if (on) SyncService.start(context) else SyncService.stop(context)
+    }
+
+    /**
+     * 回填切片终点。0 = 尚未开始（主进程首次下发时固定成「现在」），
+     * -1 = 已铺满整个窗口、不用再回填，>0 = 还要继续往前推。
+     */
+    fun backfillBefore(context: Context): Long =
+        prefs(context).getLong(KEY_BACKFILL_BEFORE, 0L)
+
+    fun setBackfillBefore(context: Context, at: Long) {
+        prefs(context).edit().putLong(KEY_BACKFILL_BEFORE, at).apply()
+    }
+
+    /** 上次重启 OPPO 健康的时间（毫秒），用于节流。 */
+    fun lastHealthRestart(context: Context): Long =
+        prefs(context).getLong(KEY_LAST_RESTART, 0L)
+
+    fun setLastHealthRestart(context: Context, at: Long) {
+        prefs(context).edit().putLong(KEY_LAST_RESTART, at).apply()
     }
 
     /** 默认 1 小时：够及时，也不至于反复扫库。 */

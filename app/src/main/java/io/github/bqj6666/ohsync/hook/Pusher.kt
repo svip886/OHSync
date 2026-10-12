@@ -54,6 +54,26 @@ object Pusher {
                 Log.i(TAG, "${spec.type.label}：${records.size} 条")
             }
         }
+
+        // 历史回填。单次推送有 3000 条上限，而查询固定按时间倒序取「最近 N 条」，
+        // 于是每轮拿到的都是同一批数据，更早的记录永远进不来。这里每轮再补一段
+        // 切片（7 天），并把切片终点回报给主进程往前挪，若干轮后即铺满整个窗口。
+        val sliceEnd = RemoteConfig.fetch()?.backfillBefore ?: 0L
+        if (sliceEnd > 0L) {
+            val sliceSpecs = QueryPlan.forBackfillSlice(reader, sliceEnd)
+            var sliceTotal = 0
+            for (spec in sliceSpecs) {
+                val rows = reader.query(spec.sql)
+                val records = rows.mapNotNull(spec.toRecord)
+                if (records.isEmpty()) continue
+                if (send(spec.type.id, records)) sliceTotal += records.size
+            }
+            Log.i(TAG, "回填切片 <$sliceEnd 共 $sliceTotal 条")
+            total += sliceTotal
+            // 无论这一段有没有数据都要回报，否则终点不会往前挪
+            RemoteConfig.reportBackfillSliceDone(sliceEnd)
+        }
+
         Log.i(TAG, "推送完成，共 $total 条${if (incremental) "（增量）" else "（全窗口）"}")
         RemoteConfig.reportSyncDone(System.currentTimeMillis())
     }

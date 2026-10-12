@@ -21,6 +21,7 @@ object Probe {
         sportSamples(reader)
         bodySamples(reader)
         sportRecordTables(reader)
+        heartRateStatTable(reader)
     }
 
     /**
@@ -153,6 +154,36 @@ object Probe {
         "DBTrackMetadata",    // 轨迹类运动汇总：另有 sport_name / 距离 / 卡路里
         "DBOneTimeSportStat", // 运动统计视图
     )
+
+    /**
+     * DBHeartRateDataStatTable：静息心率的来源。rest_hr 是按天的静息心率，
+     * date 列的格式（毫秒时间戳还是 yyyymmdd）要先看真实取值再决定怎么解析。
+     */
+    private fun heartRateStatTable(reader: TableReader) {
+        val table = "DBHeartRateDataStatTable"
+        if (reader.tableNames().none { it == table }) {
+            Log.i(TAG, "[静息心率] $table 不存在")
+            return
+        }
+        val cols = reader.columns(table)
+        Log.i(TAG, "[静息心率] $table 列: ${cols.sorted().joinToString()}")
+        val picked = listOf(
+            "_id", "date", "timezone", "min_hr", "max_hr", "average_hr", "rest_hr", "sleep_base_hr",
+        ).filter { it in cols }
+        if (picked.isEmpty()) return
+        val rows = reader.query(
+            "SELECT ${picked.joinToString()} FROM $table ORDER BY date DESC LIMIT 6"
+        )
+        Log.i(TAG, "[静息心率] 最近 6 条:")
+        rows.forEachIndexed { i, r ->
+            Log.i(TAG, "  [$i] " + picked.joinToString { "$it=${r[it]}" })
+        }
+        reader.query(
+            "SELECT COUNT(*) AS c, SUM(CASE WHEN rest_hr > 0 THEN 1 ELSE 0 END) AS ok FROM $table"
+        ).firstOrNull()?.let {
+            Log.i(TAG, "[静息心率] 共 ${it["c"]} 行，rest_hr>0 的 ${it["ok"]} 行")
+        }
+    }
 
     private fun fmt(millis: String?): String {
         val v = millis?.toLongOrNull() ?: return "-"

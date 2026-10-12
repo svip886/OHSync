@@ -17,7 +17,8 @@ internal object TableRules {
 
     private val EXACT: Map<String, RecordType> = mapOf(
         "dbheartrate" to RecordType.HEART_RATE,
-        "dbheartratedatastattable" to RecordType.HEART_RATE,
+        // 这张表是心率日统计（max/min/average + rest_hr），我们从中取静息心率
+        "dbheartratedatastattable" to RecordType.RESTING_HEART_RATE,
         "dbheartratewarning" to RecordType.HEART_RATE_WARNING,
         "dbhrvtable" to RecordType.HRV,
         "dbsleeptable" to RecordType.SLEEP_SESSION,
@@ -68,7 +69,7 @@ internal object TableRules {
         "exerciseintensity" to RecordType.EXERCISE_INTENSITY,
         "exerciseload" to RecordType.EXERCISE_LOAD,
         "recoveryheartrate" to RecordType.RECOVERY_HEART_RATE,
-        "heartratedatastat" to RecordType.HEART_RATE,
+        "heartratedatastat" to RecordType.RESTING_HEART_RATE,
         "bloodoxygensaturation" to RecordType.BLOOD_OXYGEN,
         "bloodpressurestat" to RecordType.BLOOD_PRESSURE,
         "sleepdatastat" to RecordType.SLEEP_SESSION,

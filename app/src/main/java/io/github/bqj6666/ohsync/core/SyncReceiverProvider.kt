@@ -88,9 +88,30 @@ class SyncReceiverProvider : ContentProvider() {
                     putInt("windowDays", Settings.windowDays(c))
                     putBoolean("backfillRequested", engine.pendingBackfill())
                     putLong("lastSyncAt", Settings.lastSyncAt(c))
+                    // 回填切片终点。首次下发时固定成「现在」并落盘，之后每回填完一段
+                    // 由 backfillSliceDone 往前挪 7 天；铺满窗口后置 -1，读取端据此停止。
+                    var before = Settings.backfillBefore(c)
+                    if (before == 0L) {
+                        before = System.currentTimeMillis()
+                        Settings.setBackfillBefore(c, before)
+                    }
+                    putLong("backfillBefore", if (before > 0L) before else 0L)
                 }
                 // Hook 侧完成一次手动同步后回报，避免重复触发
                 "backfillDone" -> engine.clearBackfillRequest()
+                // 读取端报告「这一段历史切片回填完了」→ 终点往前挪一个切片
+                "backfillSliceDone" -> {
+                    val c = requireNotNull(context)
+                    extras?.getLong("sliceEnd")?.let { sliceEnd ->
+                        // 切片跨度与 hook 侧 QueryPlan.BACKFILL_SLICE_MS 保持一致
+                        val next = sliceEnd - 7 * 86_400_000L
+                        val windowStart = System.currentTimeMillis() -
+                            Settings.windowDays(c) * 86_400_000L
+                        Settings.setBackfillBefore(c, if (next <= windowStart) -1L else next)
+                    }
+                }
+                // 读取端太久没拿到数据库（OPPO 健康起来了却没开库）→ 重启它重新走一遍启动
+                "restartHealth" -> HealthRestarter.restartIfDue(requireNotNull(context))
                 // Hook 侧一次推送真正结束后回报：记下时间点（下次增量只取这之后的数据），
                 // 同时清掉「已请求回填」标志 —— UI 以此判断手动同步已完成。
                 "syncDone" -> {

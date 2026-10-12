@@ -118,7 +118,10 @@ object RecordMapper {
             RecordType.EXERCISE_SESSION -> ExerciseSessionRecord(
                 start, zo, end, zo, metadata(cid),
                 ExerciseTypeMap.toHc(r.metaInt("sportMode", -1)),
-                null, null,
+                // 把类型名写进 title：导出端读它就能拿到可读名称，
+                // 不必依赖 HC 库内那套 exercise_type 编码
+                ExerciseTypeMap.nameOf(r.metaInt("sportMode", -1)),
+                null,
             )
 
             RecordType.BLOOD_PRESSURE -> BloodPressureRecord(

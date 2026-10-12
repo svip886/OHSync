@@ -4,13 +4,18 @@ import android.net.Uri
 import android.util.Log
 import io.github.bqj6666.ohsync.core.Ids
 
-/** 主进程下发的配置：口令、同步间隔、时间窗口。 */
+/** 主进程下发的配置：口令、同步间隔、时间窗口、回填切片终点。 */
 data class HookConfig(
     val token: String,
     val intervalMinutes: Int,
     val windowDays: Int,
     val backfillRequested: Boolean,
     val lastSyncAt: Long,
+    /**
+     * 回填切片终点。>0 表示还要继续回填 [backfillBefore-7天, backfillBefore) 这段历史；
+     * 铺满窗口后主进程会返回 0，读取端据此停止回填。
+     */
+    val backfillBefore: Long = 0L,
 )
 
 /**
@@ -52,6 +57,7 @@ object RemoteConfig {
                     windowDays = b.getInt("windowDays", 90),
                     backfillRequested = b.getBoolean("backfillRequested", false),
                     lastSyncAt = b.getLong("lastSyncAt", 0L),
+                    backfillBefore = b.getLong("backfillBefore", 0L),
                 )
             }
         } catch (t: Throwable) {
@@ -80,6 +86,40 @@ object RemoteConfig {
                 android.os.Bundle().apply { putLong("at", at) },
             )
         }
+    }
+
+    /**
+     * 报告「这一段历史切片回填完毕」，主进程据此把切片终点往前挪 7 天。
+     * 不报告的话终点会原地踏步，每轮都只能拿到同一批数据。
+     */
+    fun reportBackfillSliceDone(sliceEnd: Long) {
+        if (AppContextHolder.context == null) AppContextHolder.init()
+        val ctx = AppContextHolder.context ?: return
+        runCatching {
+            ctx.contentResolver.call(
+                Uri.parse("content://$OHSYNC_PACKAGE$PROVIDER_SUFFIX"),
+                "backfillSliceDone", null,
+                android.os.Bundle().apply { putLong("sliceEnd", sliceEnd) },
+            )
+        }
+    }
+
+    /**
+     * 请主进程把 OPPO 健康重启一次。
+     *
+     * 场景：OPPO 健康进程起来了却一直没打开数据库，读取端拿不到数据库实例，
+     * 广播接收器也就没注册 —— 于是「立即同步」和自动同步都毫无反应，
+     * 以前只能人工打开一次 OPPO 健康。
+     */
+    fun requestHealthRestart() {
+        if (AppContextHolder.context == null) AppContextHolder.init()
+        val ctx = AppContextHolder.context ?: return
+        runCatching {
+            ctx.contentResolver.call(
+                Uri.parse("content://$OHSYNC_PACKAGE$PROVIDER_SUFFIX"),
+                "restartHealth", null, null,
+            )
+        }.onFailure { Log.w(TAG, "请求重启 OPPO 健康失败", it) }
     }
 
     /**

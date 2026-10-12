@@ -60,6 +60,13 @@ class DbAccess(private val xposed: XposedInterface) {
                 } catch (t: Throwable) {
                     Log.e(TAG, "路 B 第 $tries 次失败", t)
                 }
+                // 试了这么久还没拿到库，多半是 OPPO 健康起来了却没打开数据库 ——
+                // 那种状态下读取端的广播接收器根本没注册，任何「立即同步」都到不了，
+                // 只能靠人工打开一次 OPPO 健康。主动请主进程把它重启一遍，免掉这一步。
+                if (!delivered && tries == 40) {   // 40 × 3 秒 ≈ 2 分钟
+                    Log.w(TAG, "重试 $tries 次仍未拿到库，请求重启 OPPO 健康")
+                    RemoteConfig.requestHealthRestart()
+                }
                 if (!delivered) Thread.sleep(RETRY_MS)
             }
             if (!delivered) Log.e(TAG, "路 B 重试 $MAX_TRIES 次仍未拿到库实例")
