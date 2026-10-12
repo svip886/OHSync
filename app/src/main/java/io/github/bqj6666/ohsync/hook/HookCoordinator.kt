@@ -43,11 +43,13 @@ class HookCoordinator(private val xposed: XposedInterface) {
             reader.attach(db)
             reportTables()
             reportedNotReady = false
-            // 首次拿到数据库时推一次；用户设了「仅手动」则不自动推
+            // 拿到数据库时推一次；用户设了「仅手动」则不自动推
             if (!pushedOnce && (RemoteConfig.fetch()?.intervalMinutes ?: 60) > 0) {
                 pushedOnce = true
-                // 首次拿库走完整窗口，把历史补上
-                pushNow(withProbe = true, incremental = false)
+                // 也是一次增量：整窗口的活儿只该干一次，由 QueryPlan.computeSince 在
+                // 「从没同步过」（lastSyncAt=0）时自动退化成整个窗口。
+                // 这里若写死 incremental=false，每次 OPPO 健康重启都会重推八万多条。
+                pushNow(withProbe = true, incremental = true)
             }
         }
 
@@ -125,7 +127,11 @@ class HookCoordinator(private val xposed: XposedInterface) {
 
                     if (manual || due) {
                         if (reader.isReady()) {
-                            pushNow(withProbe = manual, incremental = !manual)
+                            // 手动与周期都是**增量**：整窗口只该在「第一次」干一次
+                            // （QueryPlan.computeSince 发现 lastSyncAt=0 时会自动退化成
+                            // 整个窗口），之后每次点「立即同步」不该把八万多条重推一遍。
+                            // 更早的历史由下面的回填游标一轮轮往回铺，与增量互不干扰。
+                            pushNow(withProbe = manual, incremental = true)
                             lastPush = System.currentTimeMillis()
                             manualRequest = false
                         } else if (manual) {

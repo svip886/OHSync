@@ -76,8 +76,12 @@ internal object QueryPlan {
     private val upper: Long get() = upperBound
 
     /**
-     * @param incremental true 表示只取上次同步之后的新数据（周期推送走这条），
-     *                    false 表示取完整时间窗口（用户手动「立即同步」走这条）。
+     * @param incremental true 表示只取上次同步之后的新数据。**正常路径只有这一种**：
+     *        手动「立即同步」与周期推送都是增量，免得每次把整个窗口重推一遍。
+     *        从没同步过时（lastSyncAt=0）[computeSince] 会自动退化成整个时间窗口，
+     *        所以「首次拉全量、之后增量」这条规则是在这里兜住的，调用方不用判断。
+     * @param incremental false 保留给「确实要把整个窗口重读一遍」的场合（例如修完
+     *        单位/时区后做一次性回补），日常不会走到。
      */
     fun forTables(reader: TableReader, incremental: Boolean = false): List<TableSpec> =
         buildSpecs(reader, computeSince(incremental), Long.MAX_VALUE)

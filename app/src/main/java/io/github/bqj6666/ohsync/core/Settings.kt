@@ -57,7 +57,15 @@ object Settings {
         prefs(context).getInt(KEY_WINDOW, DEFAULT_WINDOW)
 
     fun setWindowDays(context: Context, days: Int) {
+        val old = windowDays(context)
         prefs(context).edit().putInt(KEY_WINDOW, days).apply()
+        // 只有**窗口变大**才需要重新回填：把游标置 0，读取端下一轮会从「现在」重新
+        // 往前铺，一直铺到新的窗口起点。窗口变小不用管 —— 已经回填的比新窗口还久，
+        // 多的那些留着也不碍事。
+        //
+        // 注意这一步不能省：日常推送都是增量的（只取上次同步之后的新数据），
+        // 窗口调大变出来的那段历史只能靠回填游标去补，游标不重置就永远补不到。
+        if (days > old) setBackfillBefore(context, 0L)
         TriggerSender.configChanged(context)
     }
 
