@@ -230,15 +230,17 @@ private fun StatusCard(status: SyncStatus, onSync: () -> Unit) {
             if (status.pendingBackfill) {
                 // 说清当前卡在哪一步。以前无论发生什么都是同一句「已通知读取端」，
                 // 卡住了也看不出来，只能干等。
-                val (msg, color) = when (status.rescueStage) {
+                val phase = when (status.rescueStage) {
                     1 -> "读取端没有响应，已去重启 OPPO 健康，等它重新打开数据库…"
-                        to MaterialTheme.colorScheme.tertiary
                     2 -> "读取端始终没有响应，本次已放弃。"
-                        to MaterialTheme.colorScheme.error
                     else -> "已通知读取端，正在读取并写入，通常几秒内完成。"
-                        to MaterialTheme.colorScheme.primary
                 }
-                Text(msg, style = MaterialTheme.typography.bodySmall, color = color)
+                val phaseColor = when (status.rescueStage) {
+                    1 -> MaterialTheme.colorScheme.tertiary
+                    2 -> MaterialTheme.colorScheme.error
+                    else -> MaterialTheme.colorScheme.primary
+                }
+                Text(phase, style = MaterialTheme.typography.bodySmall, color = phaseColor)
             } else if (status.lastError != null) {
                 Text(
                     status.lastError,

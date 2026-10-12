@@ -62,7 +62,8 @@ class DbAccess(private val xposed: XposedInterface) {
         Thread {
             var tries = 0
             var restarts = 0
-            while (!delivered) {
+            var interrupted = false
+            while (!delivered && !interrupted) {
                 tries++
                 try {
                     tryReflection(classLoader, tries)
@@ -84,7 +85,7 @@ class DbAccess(private val xposed: XposedInterface) {
                 try {
                     Thread.sleep(if (tries <= FAST_TRIES) RETRY_MS else SLOW_RETRY_MS)
                 } catch (_: InterruptedException) {
-                    return@Thread
+                    interrupted = true
                 }
             }
         }.apply { isDaemon = true }.start()

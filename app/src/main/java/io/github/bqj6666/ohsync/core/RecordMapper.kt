@@ -30,6 +30,7 @@ import androidx.health.connect.client.units.Percentage
 import androidx.health.connect.client.units.Pressure
 import androidx.health.connect.client.units.Power
 import java.time.Instant
+import java.time.ZoneId
 import java.time.ZoneOffset
 
 /**
@@ -71,10 +72,25 @@ object RecordMapper {
     fun metadata(clientRecordId: String): Metadata =
         MetadataFactory.withClientId(clientRecordId, DEVICE)
 
+    /**
+     * 记录用的时区偏移。
+     *
+     * 记录自带偏移时用它；**没有就回落到本机当前时区**。
+     *
+     * OPPO 的表里没有时区字段（实测 zoneOffsetSeconds 恒为 null），早期实现
+     * 直接按 0 也就是 UTC 写入，后果不只是显示差 8 小时 —— 连日期归属都会错位：
+     *   · 早上 8 点前醒来的睡眠被算到前一天（实测 25 天错位）
+     *   · 10-11 的步数在 UTC 日界下是 1822，按北京时日界只有 1486（手表显示 1535）
+     * 因为 Health Connect 是拿偏移换算「当地日期」的。
+     */
+    private fun zoneOf(r: SyncRecord): ZoneOffset =
+        r.zoneOffsetSeconds?.let { ZoneOffset.ofTotalSeconds(it) }
+            ?: ZoneId.systemDefault().rules.getOffset(Instant.ofEpochMilli(r.startTime))
+
     fun map(r: SyncRecord): Record {
         val start = Instant.ofEpochMilli(r.startTime)
         val end = Instant.ofEpochMilli(r.endTime)
-        val zo = ZoneOffset.ofTotalSeconds(r.zoneOffsetSeconds ?: 0)
+        val zo = zoneOf(r)
         val cid = HcClient.clientRecordId(r.recordType, r.sourceKey)
 
         return when (r.recordType) {
