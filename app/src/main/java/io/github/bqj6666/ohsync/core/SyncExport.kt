@@ -202,7 +202,7 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
 
             is DistanceRecord -> {
                 val d = dayOf(r.endTime, r.endZoneOffset)
-                val meters = r.distance.meters
+                val meters = r.distance.inMeters
                 if (countInDay) metric(d, "distance_record_table", mapOf("distance" to meters))
                 metricSource(d, "distance_record_table", "distance", pkg, mapOf("distance" to meters))
                 distSeries += r.startTime.toEpochMilli() to meters
@@ -211,7 +211,7 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
             is ActiveCaloriesBurnedRecord -> {
                 val d = dayOf(r.endTime, r.endZoneOffset)
                 // HC 里 energy 的原始列就是 cal（1000 cal = 1 kcal），与原脚本口径一致
-                val cal = r.energy.calories
+                val cal = r.energy.inCalories
                 if (countInDay) metric(d, "active_calories_burned_record_table", mapOf("energy" to cal))
                 metricSource(d, "active_calories_burned_record_table", "energy", pkg, mapOf("energy" to cal))
                 calSeries += r.startTime.toEpochMilli() to cal / 1000.0
@@ -265,68 +265,108 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
                 )
             }
 
-            else -> extraMetric(r)?.let { (table, values) ->
-                val d = dayOf(timeOf(r), zoneOf(r))
-                if (countInDay) metric(d, table, values)
-                metricSource(d, table, values.keys.first(), pkg, values)
+            // 其余类型统一进 metrics。这里刻意不依赖 IntervalRecord /
+            // InstantaneousRecord —— 这两个接口在 Kotlin 层是 internal，外部模块
+            // 引用不了（编译期直接报 "it is internal in file"），只能各类型自己给出时刻。
+            else -> extraMetric(r)?.let { e ->
+                val d = dayOf(e.time, e.zone)
+                if (countInDay) metric(d, e.table, e.values)
+                metricSource(d, e.table, e.values.keys.first(), pkg, e.values)
             }
         }
     }
 
-    /** 除了手工处理的几类，其余类型统一进 metrics。表名/列名沿用 HC 自己的命名。 */
-    private fun extraMetric(r: Record): Pair<String, Map<String, Double>>? = when (r) {
-        is TotalCaloriesBurnedRecord ->
-            "total_calories_burned_record_table" to mapOf("energy" to r.energy.calories)
-        is FloorsClimbedRecord ->
-            "floors_climbed_record_table" to mapOf("floors" to r.floors)
-        is BasalMetabolicRateRecord ->
-            "basal_metabolic_rate_record_table" to mapOf("basal_metabolic_rate" to r.basalMetabolicRate.kilocaloriesPerDay)
-        is HeartRateVariabilityRmssdRecord ->
-            "heart_rate_variability_rmssd_record_table" to mapOf("heart_rate_variability_millis" to r.heartRateVariabilityMillis)
-        is RespiratoryRateRecord ->
-            "respiratory_rate_record_table" to mapOf("rate" to r.rate)
-        is Vo2MaxRecord ->
-            "vo2_max_record_table" to mapOf("vo2" to r.vo2MillilitersPerMinuteKilogram)
-        is WeightRecord ->
-            "weight_record_table" to mapOf("weight" to r.weight.grams)
-        is BodyFatRecord ->
-            "body_fat_record_table" to mapOf("body_fat_percentage" to r.percentage.value)
-        is LeanBodyMassRecord ->
-            "lean_body_mass_record_table" to mapOf("lean_body_mass" to r.mass.grams)
-        is BodyWaterMassRecord ->
-            "body_water_mass_record_table" to mapOf("body_water_mass" to r.mass.grams)
-        is BoneMassRecord ->
-            "bone_mass_record_table" to mapOf("bone_mass" to r.mass.grams)
-        is HeightRecord ->
-            "height_record_table" to mapOf("height" to r.height.meters)
-        is BloodPressureRecord ->
-            "blood_pressure_record_table" to mapOf(
-                "systolic" to r.systolic.millimetersOfMercury,
-                "diastolic" to r.diastolic.millimetersOfMercury,
-            )
-        is BloodGlucoseRecord ->
-            "blood_glucose_record_table" to mapOf("level" to r.level.milligramsPerDeciliter)
-        is BodyTemperatureRecord ->
-            "body_temperature_record_table" to mapOf("temperature" to r.temperature.celsius)
-        // 皮温是「相对基线的偏差」，只有 baseline 是同量纲的绝对值
-        is SkinTemperatureRecord ->
-            "skin_temperature_record_table" to mapOf("temperature" to r.baseline.celsius)
-        is HydrationRecord ->
-            "hydration_record_table" to mapOf("volume" to r.volume.liters)
-        is ElevationGainedRecord ->
-            "elevation_gained_record_table" to mapOf("elevation" to r.elevation.meters)
-        else -> null
-    }
+    /**
+     * 除手工处理的几类之外，其余类型统一进 metrics。表名/列名沿用 HC 自己的命名。
+     *
+     * 返回值里带上「时刻 + 时区偏移」，而不是靠 IntervalRecord / InstantaneousRecord
+     * 这两个接口统一取 —— 它们在 Kotlin 层是 internal，外部模块引用不了。
+     */
+    private class Extra(
+        val table: String,
+        val values: Map<String, Double>,
+        val time: Instant,
+        val zone: ZoneOffset?,
+    )
 
-    private fun timeOf(r: Record): Instant = when (r) {
-        is androidx.health.connect.client.records.IntervalRecord -> r.endTime
-        is androidx.health.connect.client.records.InstantaneousRecord -> r.time
-        else -> Instant.now()
-    }
-
-    private fun zoneOf(r: Record): ZoneOffset? = when (r) {
-        is androidx.health.connect.client.records.IntervalRecord -> r.endZoneOffset
-        is androidx.health.connect.client.records.InstantaneousRecord -> r.zoneOffset
+    private fun extraMetric(r: Record): Extra? = when (r) {
+        is TotalCaloriesBurnedRecord -> Extra(
+            "total_calories_burned_record_table", mapOf("energy" to r.energy.inCalories),
+            r.endTime, r.endZoneOffset,
+        )
+        is FloorsClimbedRecord -> Extra(
+            "floors_climbed_record_table", mapOf("floors" to r.floors),
+            r.endTime, r.endZoneOffset,
+        )
+        is BasalMetabolicRateRecord -> Extra(
+            "basal_metabolic_rate_record_table",
+            mapOf("basal_metabolic_rate" to r.basalMetabolicRate.inKilocaloriesPerDay),
+            r.time, r.zoneOffset,
+        )
+        is HeartRateVariabilityRmssdRecord -> Extra(
+            "heart_rate_variability_rmssd_record_table",
+            mapOf("heart_rate_variability_millis" to r.heartRateVariabilityMillis),
+            r.time, r.zoneOffset,
+        )
+        is RespiratoryRateRecord -> Extra(
+            "respiratory_rate_record_table", mapOf("rate" to r.rate), r.time, r.zoneOffset,
+        )
+        is Vo2MaxRecord -> Extra(
+            "vo2_max_record_table", mapOf("vo2" to r.vo2MillilitersPerMinuteKilogram),
+            r.time, r.zoneOffset,
+        )
+        is WeightRecord -> Extra(
+            "weight_record_table", mapOf("weight" to r.weight.inGrams), r.time, r.zoneOffset,
+        )
+        is BodyFatRecord -> Extra(
+            "body_fat_record_table", mapOf("body_fat_percentage" to r.percentage.value),
+            r.time, r.zoneOffset,
+        )
+        is LeanBodyMassRecord -> Extra(
+            "lean_body_mass_record_table", mapOf("lean_body_mass" to r.mass.inGrams),
+            r.time, r.zoneOffset,
+        )
+        is BodyWaterMassRecord -> Extra(
+            "body_water_mass_record_table", mapOf("body_water_mass" to r.mass.inGrams),
+            r.time, r.zoneOffset,
+        )
+        is BoneMassRecord -> Extra(
+            "bone_mass_record_table", mapOf("bone_mass" to r.mass.inGrams),
+            r.time, r.zoneOffset,
+        )
+        is HeightRecord -> Extra(
+            "height_record_table", mapOf("height" to r.height.inMeters), r.time, r.zoneOffset,
+        )
+        is BloodPressureRecord -> Extra(
+            "blood_pressure_record_table",
+            mapOf(
+                "systolic" to r.systolic.inMillimetersOfMercury,
+                "diastolic" to r.diastolic.inMillimetersOfMercury,
+            ),
+            r.time, r.zoneOffset,
+        )
+        is BloodGlucoseRecord -> Extra(
+            "blood_glucose_record_table", mapOf("level" to r.level.inMilligramsPerDeciliter),
+            r.time, r.zoneOffset,
+        )
+        is BodyTemperatureRecord -> Extra(
+            "body_temperature_record_table", mapOf("temperature" to r.temperature.inCelsius),
+            r.time, r.zoneOffset,
+        )
+        // 皮温记的是「相对基线的偏差」，只有 baseline 是同量纲的绝对值
+        is SkinTemperatureRecord -> Extra(
+            "skin_temperature_record_table",
+            mapOf("temperature" to (r.baseline?.inCelsius ?: 0.0)),
+            r.endTime, r.endZoneOffset,
+        )
+        is HydrationRecord -> Extra(
+            "hydration_record_table", mapOf("volume" to r.volume.inLiters),
+            r.endTime, r.endZoneOffset,
+        )
+        is ElevationGainedRecord -> Extra(
+            "elevation_gained_record_table", mapOf("elevation" to r.elevation.inMeters),
+            r.endTime, r.endZoneOffset,
+        )
         else -> null
     }
 
