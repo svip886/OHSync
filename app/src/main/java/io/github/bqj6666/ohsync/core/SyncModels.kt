@@ -42,6 +42,22 @@ data class SyncStatus(
     val failedCount: Long = 0,
     val lastError: String? = null,
     val pendingBackfill: Boolean = false,
+    /**
+     * 看门狗阶段（只在 pendingBackfill 期间有意义）：
+     *   0 = 刚通知读取端，等它响应
+     *   1 = 等太久没动静，已去重启 OPPO 健康，正在等它重新开库
+     *   2 = 重启后仍然没动静，本次已放弃
+     */
+    val rescueStage: Int = 0,
+    /**
+     * 本应用是否有 root。null = 还没检测过。
+     *
+     * 自动重启 OPPO 健康强杀别的应用必须走 root，没有它就只能退化成
+     * 「把 OPPO 健康拉到前台」。这个值要在界面上明确告诉用户，不能默默失败。
+     */
+    val rootGranted: Boolean? = null,
+    /** 读取端回报的数据库状态。null = 还没回报过。 */
+    val readerDbReady: Boolean? = null,
 ) {
     val healthy: Boolean get() = hookConnected && hcPermissionGranted && lastError == null
 }

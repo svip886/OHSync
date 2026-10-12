@@ -89,10 +89,12 @@ fun OHSyncScreen() {
     var keepAlive by remember { mutableStateOf(Settings.keepAlive(ctx)) }
 
     // 进入页面时核对一次权限（用户可能在 Health Connect 里改过），
-    // 并问一次读取端是否在线。都是事件驱动，只在界面打开时各发生一次。
+    // 问一次读取端是否在线，并核对 root 状态（自动重启 OPPO 健康要用）。
+    // 都是事件驱动，只在界面打开时各发生一次；root 检测只在从未检测过时才真的执行 su。
     LaunchedEffect(Unit) {
         SyncEngine.notePermission(hc.isWriteGranted())
         SyncEngine.pingReader()
+        SyncEngine.refreshRootState(ctx)
     }
 
     Scaffold(topBar = { TopAppBar(title = { Text("OHSync") }) }) { pad ->
@@ -125,6 +127,41 @@ fun OHSyncScreen() {
                                 onClick = { openHcAuth() },
                                 modifier = Modifier.fillMaxWidth(),
                             ) { Text("去授权") }
+                        }
+                    }
+                }
+            }
+
+            // ── 没有 root：自动重启 OPPO 健康会失效，必须明说，不能默默失败 ──
+            if (status.rootGranted == false) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                        ),
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    ) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                "没有 root 权限，自动重启 OPPO 健康不可用",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                "OPPO 健康有时启动完却不打开数据库，这时读取端拿不到数据，只能把它" +
+                                    "重启一次。强制关闭别的应用需要 root，请在本机的 KernelSU / " +
+                                    "Magisk 管理器里给「OHSync」授予 root。",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(
+                                "没授权也能用，只是要多一步：点「立即同步」后若读取端没响应，应用会" +
+                                    "退而把 OPPO 健康拉到前台（等同于人工打开一次）—— 这时请保持" +
+                                    "本应用在前台。",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Button(
+                                onClick = { SyncEngine.requestRootGrant(ctx) },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("申请 root 授权") }
                         }
                     }
                 }
@@ -191,10 +228,22 @@ private fun StatusCard(status: SyncStatus, onSync: () -> Unit) {
                 Text(if (status.pendingBackfill) "正在同步…" else "立即同步")
             }
             if (status.pendingBackfill) {
+                // 说清当前卡在哪一步。以前无论发生什么都是同一句「已通知读取端」，
+                // 卡住了也看不出来，只能干等。
+                val (msg, color) = when (status.rescueStage) {
+                    1 -> "读取端没有响应，已去重启 OPPO 健康，等它重新打开数据库…"
+                        to MaterialTheme.colorScheme.tertiary
+                    2 -> "读取端始终没有响应，本次已放弃。"
+                        to MaterialTheme.colorScheme.error
+                    else -> "已通知读取端，正在读取并写入，通常几秒内完成。"
+                        to MaterialTheme.colorScheme.primary
+                }
+                Text(msg, style = MaterialTheme.typography.bodySmall, color = color)
+            } else if (status.lastError != null) {
                 Text(
-                    "已通知读取端，正在读取并写入，通常几秒内完成。",
+                    status.lastError,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = MaterialTheme.colorScheme.error,
                 )
             }
         }

@@ -46,30 +46,47 @@ class DbAccess(private val xposed: XposedInterface) {
 
     /**
      * 路 B：反复重试直到拿到实例。
+     *
      * OPPO 开库的时间点不固定（可能等界面加载数据时才开），单次尝试没有意义。
+     *
+     * 节奏分两段，而且**永不放弃**：
+     *   - 前 [FAST_TRIES] 轮每 3 秒一次，覆盖「OPPO 正常启动、稍后就开库」的常见情况；
+     *   - 之后降到每 60 秒一次，并且每隔几分钟请主进程重启一次 OPPO 健康。
+     *
+     * 早期版本试满 200 轮就整个退出 —— 那之后再出问题就彻底没人管了，
+     * 用户点「立即同步」不会有任何反应（实测症状之一）。
      */
     fun startFallbackLoop(classLoader: ClassLoader) {
         if (fallbackStarted) return
         fallbackStarted = true
         Thread {
             var tries = 0
-            while (!delivered && tries < MAX_TRIES) {
+            var restarts = 0
+            while (!delivered) {
                 tries++
                 try {
                     tryReflection(classLoader, tries)
                 } catch (t: Throwable) {
                     Log.e(TAG, "路 B 第 $tries 次失败", t)
                 }
-                // 试了这么久还没拿到库，多半是 OPPO 健康起来了却没打开数据库 ——
-                // 那种状态下读取端的广播接收器根本没注册，任何「立即同步」都到不了，
-                // 只能靠人工打开一次 OPPO 健康。主动请主进程把它重启一遍，免掉这一步。
-                if (!delivered && tries == 40) {   // 40 × 3 秒 ≈ 2 分钟
-                    Log.w(TAG, "重试 $tries 次仍未拿到库，请求重启 OPPO 健康")
+                if (delivered) break
+
+                // 进入慢速阶段后周期性求助：OPPO 健康起来了却没开数据库时，
+                // 只有把它重启一遍才会重新走完整启动流程。执行方是主进程
+                // （它才有本应用的 uid，su 授权才落在 OHSync 头上）。
+                val slowRound = tries - FAST_TRIES
+                if (tries == FAST_TRIES || (slowRound > 0 && slowRound % RESTART_EVERY_SLOW == 0)) {
+                    restarts++
+                    Log.w(TAG, "路 B 重试 $tries 轮仍未拿到库，第 $restarts 次请求重启 OPPO 健康")
                     RemoteConfig.requestHealthRestart()
                 }
-                if (!delivered) Thread.sleep(RETRY_MS)
+
+                try {
+                    Thread.sleep(if (tries <= FAST_TRIES) RETRY_MS else SLOW_RETRY_MS)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
             }
-            if (!delivered) Log.e(TAG, "路 B 重试 $MAX_TRIES 次仍未拿到库实例")
         }.apply { isDaemon = true }.start()
     }
 
@@ -147,7 +164,15 @@ class DbAccess(private val xposed: XposedInterface) {
         private const val TAG = "OHSyncDb"
         private const val APP_DATABASE = "com.heytap.databaseengineservice.db.AppDatabase"
         private const val RETRY_MS = 3000L
-        private const val MAX_TRIES = 200
+
+        /** 快速阶段的轮数（约 2 分钟），之后转入慢速重试。 */
+        private const val FAST_TRIES = 40
+
+        /** 慢速阶段的间隔。永不退出，所以必须放慢，别把 CPU 和电池耗掉。 */
+        private const val SLOW_RETRY_MS = 60_000L
+
+        /** 慢速阶段每这么多轮请主进程重启一次 OPPO 健康（主进程还会再节流）。 */
+        private const val RESTART_EVERY_SLOW = 5
 
         private val DB_GETTERS = setOf("getReadableDatabase", "getWritableDatabase")
 

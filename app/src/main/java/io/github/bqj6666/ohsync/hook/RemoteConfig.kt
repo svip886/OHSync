@@ -105,11 +105,32 @@ object RemoteConfig {
     }
 
     /**
+     * 回报读取端状态。
+     *
+     * 用途：读方收到了「立即同步」，但数据库还没就绪、暂时干不了 —— 这个事实要说
+     * 给主进程听。否则看门狗只能看到「没人理我」，会把 OPPO 健康重启一遍；
+     * 而读方还活着时本该由它自己重试。
+     */
+    fun reportReaderState(dbReady: Boolean) {
+        if (AppContextHolder.context == null) AppContextHolder.init()
+        val ctx = AppContextHolder.context ?: return
+        runCatching {
+            ctx.contentResolver.call(
+                Uri.parse("content://$OHSYNC_PACKAGE$PROVIDER_SUFFIX"),
+                "readerState", null,
+                android.os.Bundle().apply { putBoolean("dbReady", dbReady) },
+            )
+        }
+    }
+
+    /**
      * 请主进程把 OPPO 健康重启一次。
      *
      * 场景：OPPO 健康进程起来了却一直没打开数据库，读取端拿不到数据库实例，
-     * 广播接收器也就没注册 —— 于是「立即同步」和自动同步都毫无反应，
-     * 以前只能人工打开一次 OPPO 健康。
+     * 推送做不了，自动同步也就一直空转。重试若干轮仍无果时按间隔上报。
+     *
+     * 注意执行方是**主进程**：只有它有本应用的 uid，`su` 授权才会落在 OHSync 头上；
+     * 在宿主进程里直接调 su 会被算成 OPPO 健康在申请 root（错人）。
      */
     fun requestHealthRestart() {
         if (AppContextHolder.context == null) AppContextHolder.init()

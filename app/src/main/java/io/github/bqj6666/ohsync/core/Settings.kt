@@ -17,6 +17,7 @@ object Settings {
     private const val KEY_KEEP_ALIVE = "keep_alive"
     private const val KEY_BACKFILL_BEFORE = "backfill_before"
     private const val KEY_LAST_RESTART = "last_health_restart_at"
+    private const val KEY_ROOT_STATE = "root_state"
 
     /** 同步间隔选项。0 表示只在手动点「立即同步」时才推。 */
     val INTERVAL_OPTIONS: List<Pair<Int, String>> = listOf(
@@ -113,6 +114,22 @@ object Settings {
     fun setLastHealthRestart(context: Context, at: Long) {
         prefs(context).edit().putLong(KEY_LAST_RESTART, at).apply()
     }
+
+    /**
+     * root 授权状态：-1 = 还没检测过，0 = 没有，1 = 有。
+     *
+     * 落盘是为了「只询问一次」：每次执行 su 都可能让 KernelSU 弹一次授权框，
+     * 检测结果为「没有」时就不再自动检测，只留界面上的手动按钮。
+     */
+    fun rootState(context: Context): Int = prefs(context).getInt(KEY_ROOT_STATE, ROOT_UNKNOWN)
+
+    fun setRootState(context: Context, state: Int) {
+        prefs(context).edit().putInt(KEY_ROOT_STATE, state).apply()
+    }
+
+    const val ROOT_UNKNOWN = -1
+    const val ROOT_NO = 0
+    const val ROOT_YES = 1
 
     /** 默认 1 小时：够及时，也不至于反复扫库。 */
     const val DEFAULT_INTERVAL = 60

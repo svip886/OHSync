@@ -32,21 +32,31 @@ class HookCoordinator(private val xposed: XposedInterface) {
     fun onPackageReady(cl: ClassLoader) {
         AppContextHolder.init()
 
+        // 事件通道**先注册**：它只依赖 Context，不依赖数据库。
+        //
+        // 早期版本把它放在「拿到数据库之后」，于是 OPPO 健康启动完却没开库时，
+        // 用户点「立即同步」的广播根本没人接 —— 界面就一直停在「已通知读取端」，
+        // 用户只能自己去打开一次 OPPO 健康。这是本轮修的主症状。
+        startSyncScheduler()
+
         dbAccess.onDatabaseReady = { db ->
             reader.attach(db)
             reportTables()
+            reportedNotReady = false
             // 首次拿到数据库时推一次；用户设了「仅手动」则不自动推
             if (!pushedOnce && (RemoteConfig.fetch()?.intervalMinutes ?: 60) > 0) {
                 pushedOnce = true
                 // 首次拿库走完整窗口，把历史补上
                 pushNow(withProbe = true, incremental = false)
             }
-            startSyncScheduler()
         }
 
         // 兜底：路 A 错过首次开库时，反复重试从 AppDatabase.INSTANCE 反射取
         dbAccess.startFallbackLoop(cl)
     }
+
+    /** 已经回报过「库还没就绪」。每次拿到库后复位，避免反复回报。 */
+    @Volatile private var reportedNotReady = false
 
     /**
      * 真实表结构报告：表名取自 sqlite_master，是权威来源。
@@ -84,31 +94,28 @@ class HookCoordinator(private val xposed: XposedInterface) {
         if (schedulerStarted) return
         schedulerStarted = true
 
-        val ctx = AppContextHolder.context
-        if (ctx == null) {
-            Log.w(TAG, "没有 Context，事件通道未注册，只能靠本地计时")
-        } else {
-            SyncTrigger.register(
-                ctx,
-                onSyncNow = { manualRequest = true; configDirty = true; wake() },
-                onConfigChanged = { configDirty = true; wake() },
-                onPing = { RemoteConfig.ping() },
-            )
-        }
-
         Thread {
             var lastPush = 0L
             var cfg: HookConfig? = null
             var cfgAt = 0L
+            var lastFetchTry = 0L
             while (true) {
                 try {
+                    // 事件通道尽早注册。放在循环里反复试是因为 Application 挂上的
+                    // 时机可能略晚于 onPackageReady，一次失败就再也不注册的话，
+                    // 「立即同步」会重新变成没人接（正是本轮要修的毛病）。
+                    tryRegisterTrigger()
+
                     val now = System.currentTimeMillis()
-                    val stale = cfg == null || now - cfgAt >= CONFIG_REFRESH_MS
-                    if (stale || configDirty) {
+                    // 取配置失败也要节流：通道没注册时循环是 1 秒一轮，
+                    // 不加这层就会退化成每秒一次的跨进程轮询（早期版本的毛病）。
+                    val fetchDue = configDirty || cfg == null || now - cfgAt >= CONFIG_REFRESH_MS
+                    if (fetchDue && now - lastFetchTry >= FETCH_MIN_GAP_MS) {
+                        lastFetchTry = now
+                        configDirty = false
                         RemoteConfig.fetch(force = true)?.let {
                             cfg = it
                             cfgAt = now
-                            configDirty = false
                         }
                     }
 
@@ -123,9 +130,16 @@ class HookCoordinator(private val xposed: XposedInterface) {
                             manualRequest = false
                         } else {
                             Log.w(TAG, "数据库未就绪，稍后再试")
+                            // 回报一次「我收到了，但库还没开」：主进程据此知道读方还
+                            // 活着，不必去重启 OPPO 健康（那是没人响应时才该做的）。
+                            // 只报一次 —— 反复报会把看门狗一直喂饱，反而掩盖问题。
+                            if (manual && !reportedNotReady) {
+                                reportedNotReady = true
+                                RemoteConfig.reportReaderState(false)
+                            }
                         }
                     }
-                    waitForEvent(TICK_MS)
+                    waitForEvent(if (triggerRegistered) TICK_MS else REGISTER_RETRY_MS)
                 } catch (t: Throwable) {
                     Log.e(TAG, "同步调度异常", t)
                     waitForEvent(60_000L)
@@ -133,6 +147,26 @@ class HookCoordinator(private val xposed: XposedInterface) {
             }
         }.apply { isDaemon = true }.start()
         Log.i(TAG, "同步调度已启动（事件驱动，本地计时）")
+    }
+
+    @Volatile private var triggerRegistered = false
+
+    /** 注册事件通道。只需成功一次；Context 还没拿到时下一轮再试。 */
+    private fun tryRegisterTrigger() {
+        if (triggerRegistered) return
+        if (AppContextHolder.context == null) AppContextHolder.init()
+        val ctx = AppContextHolder.context
+        if (ctx == null) {
+            Log.w(TAG, "还没有 Context，事件通道下一轮再试")
+            return
+        }
+        SyncTrigger.register(
+            ctx,
+            onSyncNow = { manualRequest = true; configDirty = true; wake() },
+            onConfigChanged = { configDirty = true; wake() },
+            onPing = { RemoteConfig.ping() },
+        )
+        triggerRegistered = true
     }
 
     private var schedulerStarted = false
@@ -182,6 +216,12 @@ class HookCoordinator(private val xposed: XposedInterface) {
 
         /** 本地计时粒度。只 sleep，不做任何 IPC。 */
         private const val TICK_MS = 30_000L
+
+        /** 事件通道还没注册成功时的重试粒度，要快，用户可能马上就会点同步。 */
+        private const val REGISTER_RETRY_MS = 1_000L
+
+        /** 两次跨进程取配置之间的最小间隔。 */
+        private const val FETCH_MIN_GAP_MS = 30_000L
 
         /** 兜底刷新配置的间隔（正常情况下由事件驱动）。 */
         private const val CONFIG_REFRESH_MS = 3_600_000L

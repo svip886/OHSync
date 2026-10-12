@@ -112,6 +112,11 @@ class SyncReceiverProvider : ContentProvider() {
                 }
                 // 读取端太久没拿到数据库（OPPO 健康起来了却没开库）→ 重启它重新走一遍启动
                 "restartHealth" -> HealthRestarter.restartIfDue(requireNotNull(context))
+                // 读取端收到「立即同步」后的回执：它活着，并告知数据库此刻是否就绪。
+                // 有这条回执，主进程看门狗就知道该不该出手重启 OPPO 健康。
+                "readerState" -> {
+                    engine.noteReaderState(extras?.getBoolean("dbReady", false) == true)
+                }
                 // Hook 侧一次推送真正结束后回报：记下时间点（下次增量只取这之后的数据），
                 // 同时清掉「已请求回填」标志 —— UI 以此判断手动同步已完成。
                 "syncDone" -> {
