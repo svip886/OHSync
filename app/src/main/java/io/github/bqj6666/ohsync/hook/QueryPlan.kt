@@ -73,6 +73,9 @@ internal object QueryPlan {
                 key == "dbheartrate" -> heartRateSpec(table, cols)?.let { out += it }
                 key == "dbbloodpressure" -> bloodPressureSpec(table, cols)?.let { out += it }
                 key == "dbbloodoxygensaturation" -> bloodOxygenSpec(table, cols)?.let { out += it }
+                // 单次运动会话（跑步/骑行/游泳…）。DBOneTimeSportStat 的名字里同样含
+                // "onetimesport"，所以这里必须精确匹配表名，否则两张表会同时命中。
+                key == "dbonetimesport" -> oneTimeSportSpec(table, cols)?.let { out += it }
                 // 睡眠不在这里：它是多行拼成一条会话，见 SleepBuilder
             }
         }
@@ -230,6 +233,42 @@ internal object QueryPlan {
                     startTime = ts,
                     endTime = ts,
                     values = mapOf(RecordMapper.V_PERCENT to v),
+                )
+            }
+        }
+    }
+
+    /**
+     * DBOneTimeSport：单次运动主表。
+     *
+     * 列实测为 _id / start_time / end_time / sport_mode（见 Probe 的 [运动表] 输出）。
+     * 这张表没有距离/卡路里/时长列 —— 那些在 DBOneTimeSportStat 与 DBTrackMetadata 里，
+     * 而 Health Connect 的 ExerciseSessionRecord 本身也只承载「会话 + 类型」，
+     * 所以这里只取区间与类型，够用。
+     *
+     * _id 是 INTEGER PRIMARY KEY AUTOINCREMENT，可靠，直接当 sourceKey。
+     */
+    private fun oneTimeSportSpec(table: String, cols: Set<String>): TableSpec? {
+        if (!cols.containsAll(listOf("start_time", "end_time", "sport_mode"))) return null
+        val sql = "SELECT _id, start_time, end_time, sport_mode FROM $table " +
+            "WHERE end_time > start_time AND start_time >= $since " +
+            "ORDER BY start_time DESC LIMIT $PER_SPEC_LIMIT"
+        return TableSpec(RecordType.EXERCISE_SESSION, sql) { r ->
+            val id = r["_id"]?.toLongOrNull()
+            val start = r["start_time"]?.toLongOrNull()
+            val end = r["end_time"]?.toLongOrNull()
+            if (id == null || start == null || end == null || start <= 0L || end <= start) {
+                null
+            } else {
+                SyncRecord(
+                    type = RecordType.EXERCISE_SESSION.id,
+                    sourceKey = "$table:$id",
+                    startTime = start,
+                    endTime = end,
+                    // sport_mode 原始值照搬，由主进程翻译成 HC 的 exerciseType（两端分工）
+                    metadata = mapOf(
+                        "sportMode" to (r["sport_mode"]?.toIntOrNull() ?: -1).toString()
+                    ),
                 )
             }
         }
