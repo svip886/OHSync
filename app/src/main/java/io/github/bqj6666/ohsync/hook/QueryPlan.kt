@@ -318,13 +318,14 @@ internal object QueryPlan {
      */
     private fun restingHrSpec(table: String, cols: Set<String>): TableSpec? {
         if (!cols.containsAll(listOf("date", "rest_hr"))) return null
+        // date 列实测是 yyyymmdd 形式的整数（形如 20261012），不是毫秒时间戳，
+        // 没法拿毫秒去和它在 SQL 里比 —— 时间窗口过滤挪到 Kotlin 侧（这张表很小，全取无妨）。
         val sql = "SELECT _id, date, rest_hr FROM $table " +
-            "WHERE rest_hr > 0 AND date >= $since AND date < $upper " +
-            "ORDER BY date DESC LIMIT $PER_SPEC_LIMIT"
+            "WHERE rest_hr > 0 ORDER BY date DESC LIMIT $PER_SPEC_LIMIT"
         return TableSpec(RecordType.RESTING_HEART_RATE, sql) { r ->
             val ms = epochMillis(r["date"]?.toLongOrNull()) ?: return@TableSpec null
             val bpm = r["rest_hr"]?.toDoubleOrNull() ?: return@TableSpec null
-            if (bpm <= 0.0) {
+            if (bpm <= 0.0 || ms < since || ms >= upper) {
                 null
             } else {
                 SyncRecord(
