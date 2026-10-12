@@ -28,8 +28,8 @@ object ExportRunner {
 
     private const val TAG = "OHSyncExport"
 
-    /** 单次导出的时间上限。实测有过一次「读到一半没动静」，必须有兜底。 */
-    private const val TIMEOUT_MS = 5 * 60_000L
+    /** 单次导出的时间上限。全量重建时 HC 分页会明显变慢（实测 115 秒/类型），给足余量。 */
+    private const val TIMEOUT_MS = 15 * 60_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -115,14 +115,13 @@ object ExportRunner {
         val offsetSec = SyncExport.localOffsetSeconds
 
         // 本地那份「成品」缓存。给出去的是全量，但只有最近几天需要重读 HC。
-        val snap = if (full) {
-            ExportCache.clear(c)
-            ExportCache.load(c, window, offsetSec, otherSources)
-        } else {
-            ExportCache.load(c, window, offsetSec, otherSources)
-        }
-        val readFrom = if (snap.days.isEmpty()) {
-            Log.i(TAG, "没有可用缓存，本轮全量读整个窗口")
+        val snap = ExportCache.load(c, window, offsetSec, otherSources)
+        val readFrom = if (full || snap.days.isEmpty()) {
+            Log.i(
+                TAG,
+                if (full) "全量重建：整窗口重读（HC 分页在数据量大时会明显变慢，可能要几分钟）"
+                else "没有可用缓存，本轮全量读整个窗口",
+            )
             null
         } else {
             // 往前多留 2 天：数据是陆续到的，昨天/前天的天值可能还在变。
@@ -131,9 +130,13 @@ object ExportRunner {
                 .toInstant().toEpochMilli()
                 .also { Log.i(TAG, "增量读：只重读 ${Instant.ofEpochMilli(it)} 之后的记录，其余用缓存") }
         }
+        // 全量重建时不复用缓存里的天；但**也不提前删掉旧缓存** —— 万一这次读到一半失败，
+        // 旧缓存还在，远端那份文件至少还是上一次的正确版本（早先的写法是先把缓存清了，
+        // 失败就两头空）。
+        val reuse = if (full) emptyMap() else snap.days
 
         val exporter = SyncExport(c, hc)
-        val text = exporter.buildJson(window, otherSources, readFrom, snap.days)
+        val text = exporter.buildJson(window, otherSources, readFrom, reuse)
         if (exporter.builtDays.isNotEmpty()) {
             ExportCache.save(c, exporter.builtDays, window, offsetSec, otherSources)
         }
