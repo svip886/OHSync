@@ -172,8 +172,14 @@ class DbAccess(private val xposed: XposedInterface) {
         /** 慢速阶段的间隔。永不退出，所以必须放慢，别把 CPU 和电池耗掉。 */
         private const val SLOW_RETRY_MS = 60_000L
 
-        /** 慢速阶段每这么多轮请主进程重启一次 OPPO 健康（主进程还会再节流）。 */
-        private const val RESTART_EVERY_SLOW = 5
+        /**
+         * 慢速阶段每这么多轮请主进程重启一次 OPPO 健康。
+         *
+         * 一轮 60 秒，所以是 20 分钟一次。别调太小：OPPO 健康有多个进程，每个都跑
+         * 这个循环，太小会让「重启请求」变得很吵（实际重启仍由主进程按 10 分钟节流，
+         * 请求得再勤也不会更早生效）。用户手动点同步的那条路有主进程看门狗兜着。
+         */
+        private const val RESTART_EVERY_SLOW = 20
 
         private val DB_GETTERS = setOf("getReadableDatabase", "getWritableDatabase")
 

@@ -128,12 +128,15 @@ class HookCoordinator(private val xposed: XposedInterface) {
                             pushNow(withProbe = manual, incremental = !manual)
                             lastPush = System.currentTimeMillis()
                             manualRequest = false
-                        } else {
+                        } else if (manual) {
+                            // 只有「用户明确要求过」才吭声。OPPO 健康有好几个进程，
+                            // 拿不到库的那些会一直空转，每 30 秒刷一行日志毫无价值
+                            // 而且把 logcat 冲掉（排查时最需要它）。
                             Log.w(TAG, "数据库未就绪，稍后再试")
                             // 回报一次「我收到了，但库还没开」：主进程据此知道读方还
                             // 活着，不必去重启 OPPO 健康（那是没人响应时才该做的）。
                             // 只报一次 —— 反复报会把看门狗一直喂饱，反而掩盖问题。
-                            if (manual && !reportedNotReady) {
+                            if (!reportedNotReady) {
                                 reportedNotReady = true
                                 RemoteConfig.reportReaderState(false)
                             }
