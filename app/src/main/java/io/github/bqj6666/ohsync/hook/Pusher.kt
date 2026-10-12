@@ -29,6 +29,15 @@ object Pusher {
     /** 等主进程就绪的最长时间。 */
     private const val WAIT_READY_MS = 12_000L
 
+    /**
+     * 一次推送最多连做几段历史回填。
+     *
+     * 6 段 × 14 天 ≈ 84 天，一年多的时间窗大概十几轮就能铺满。别再往上加：
+     * 这段是跑在 OPPO 健康进程里的串行工作，做久了会明显拖慢宿主，而且 Health
+     * Connect 的写入也有配额，一口气灌太多反而容易失败。
+     */
+    private const val MAX_SLICES_PER_PUSH = 6
+
     fun push(reader: TableReader, incremental: Boolean = false) {
         val specs = QueryPlan.forTables(reader, incremental)
         val sleep = SleepBuilder.build(reader)
@@ -55,11 +64,14 @@ object Pusher {
             }
         }
 
-        // 历史回填。单次推送有 3000 条上限，而查询固定按时间倒序取「最近 N 条」，
-        // 于是每轮拿到的都是同一批数据，更早的记录永远进不来。这里每轮再补一段
-        // 切片（7 天），并把切片终点回报给主进程往前挪，若干轮后即铺满整个窗口。
-        val sliceEnd = RemoteConfig.fetch()?.backfillBefore ?: 0L
-        if (sliceEnd > 0L) {
+        // 历史回填。单次查询有 3000 条上限，且固定按时间倒序取「最近 N 条」，所以每轮
+        // 只能再往前啃一段。这里一次推送连做若干段 —— 否则「铺满整个窗口」要几十轮，
+        // 用户根本等不到。每段做完立刻回报终点，主进程据此把游标往前挪，中途被打断
+        // 也不会白干（下一轮从新游标继续）。
+        var sliceEnd = RemoteConfig.fetch(force = true)?.backfillBefore ?: 0L
+        var rounds = 0
+        while (sliceEnd > 0L && rounds < MAX_SLICES_PER_PUSH) {
+            rounds++
             val sliceSpecs = QueryPlan.forBackfillSlice(reader, sliceEnd)
             var sliceTotal = 0
             for (spec in sliceSpecs) {
@@ -72,7 +84,10 @@ object Pusher {
             total += sliceTotal
             // 无论这一段有没有数据都要回报，否则终点不会往前挪
             RemoteConfig.reportBackfillSliceDone(sliceEnd)
+            // 取回挪过的游标；主进程铺满窗口后会返回 0，据此收工
+            sliceEnd = RemoteConfig.fetch(force = true)?.backfillBefore ?: 0L
         }
+        if (rounds > 1) Log.i(TAG, "本次连做 $rounds 段历史回填")
 
         Log.i(TAG, "推送完成，共 $total 条${if (incremental) "（增量）" else "（全窗口）"}")
         RemoteConfig.reportSyncDone(System.currentTimeMillis())

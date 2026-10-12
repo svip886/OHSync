@@ -103,8 +103,8 @@ class SyncReceiverProvider : ContentProvider() {
                 "backfillSliceDone" -> {
                     val c = requireNotNull(context)
                     extras?.getLong("sliceEnd")?.let { sliceEnd ->
-                        // 切片跨度与 hook 侧 QueryPlan.BACKFILL_SLICE_MS 保持一致
-                        val next = sliceEnd - 7 * 86_400_000L
+                        // 切片跨度与读取端用的是同一个常量，否则游标会漂
+                        val next = sliceEnd - Ids.BACKFILL_SLICE_MS
                         val windowStart = System.currentTimeMillis() -
                             Settings.windowDays(c) * 86_400_000L
                         Settings.setBackfillBefore(c, if (next <= windowStart) -1L else next)

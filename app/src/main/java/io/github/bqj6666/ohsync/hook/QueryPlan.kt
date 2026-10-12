@@ -1,6 +1,7 @@
 package io.github.bqj6666.ohsync.hook
 
 import android.util.Log
+import io.github.bqj6666.ohsync.core.Ids
 import io.github.bqj6666.ohsync.core.RecordMapper
 import io.github.bqj6666.ohsync.core.RecordType
 import io.github.bqj6666.ohsync.core.SyncRecord
@@ -44,8 +45,16 @@ internal object QueryPlan {
      */
     private const val PER_SPEC_LIMIT = 3000
 
-    /** 单次回填切片的时间跨度。太大容易撞上 PER_SPEC_LIMIT，太小则回填得慢。 */
-    private const val BACKFILL_SLICE_MS = 7 * 86_400_000L
+    /**
+     * 单次回填切片的时间跨度。
+     *
+     * 取值要在「别撞上 [PER_SPEC_LIMIT]」和「别回填得太慢」之间平衡：步数这类
+     * 一天百来条，两周也就一千多条，还在上限内；心率这类一天几百条本来就会
+     * 撞上限，切片再大也没用（靠 [Pusher] 一次多做几段来补）。
+     *
+     * 放在 core/Ids 是因为主进程也要用它来挪游标，两边必须是同一个值。
+     */
+    private val BACKFILL_SLICE_MS: Long get() = Ids.BACKFILL_SLICE_MS
 
     /** 由 [buildSpecs] 每次调用时设置：本次要读的时间下界（含）与上界（不含）。 */
     @Volatile private var lowerBound: Long = 0L
@@ -74,7 +83,7 @@ internal object QueryPlan {
         buildSpecs(reader, computeSince(incremental), Long.MAX_VALUE)
 
     /**
-     * 回填切片：取 [before - 7 天, before) 这一段的历史。
+     * 回填切片：取 [before - 一段, before) 这一段的历史。
      *
      * 为什么需要它：单次推送有 PER_SPEC_LIMIT 上限，且查询固定按时间倒序取「最近 N 条」，
      * 于是每次拿到的都是同一批数据，更早的记录一辈子进不来 —— 表现就是步数只覆盖 15 天、

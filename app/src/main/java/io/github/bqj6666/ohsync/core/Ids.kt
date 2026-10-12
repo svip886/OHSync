@@ -31,4 +31,12 @@ object Ids {
 
     /** 被读取的目标应用（OPPO 健康）。 */
     const val TARGET_PACKAGE = "com.heytap.health"
+
+    /**
+     * 历史回填切片的时间跨度。
+     *
+     * **读取端与主进程必须用同一个值**：读取端按它切段、主进程按它往前挪游标，
+     * 两边不一致游标就会漂（早期就是硬编码在两个地方，改一处就错）。
+     */
+    const val BACKFILL_SLICE_MS = 14 * 86_400_000L
 }
