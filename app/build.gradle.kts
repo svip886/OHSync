@@ -17,11 +17,18 @@ android {
 
     signingConfigs {
         create("release") {
-            // 只在有环境变量时生效：本地无密钥也能构建 debug
+            // 只在**密钥文件确实存在**且给了口令时才生效。
+            //
+            // 不能只看环境变量有没有设：CI 的 workflow 是无条件导出 OHSYNC_KEYSTORE_PATH
+            // 的（好让 tag 构建能拿到密钥），fork 里没配 Secrets 时那个路径并不存在 ——
+            // 只看变量就会走进「用正式密钥签名」的分支，然后 validateSigningRelease 直接
+            // 报 Keystore file not found（实测）。判断文件存在才对。
             val ksPath = System.getenv("OHSYNC_KEYSTORE_PATH")
-            if (!ksPath.isNullOrBlank()) {
-                storeFile = file(ksPath)
-                storePassword = System.getenv("OHSYNC_KEYSTORE_PASSWORD")
+            val ksPass = System.getenv("OHSYNC_KEYSTORE_PASSWORD")
+            val ksFile = ksPath?.takeIf { it.isNotBlank() }?.let { file(it) }
+            if (ksFile != null && ksFile.exists() && !ksPass.isNullOrBlank()) {
+                storeFile = ksFile
+                storePassword = ksPass
                 keyAlias = System.getenv("OHSYNC_KEY_ALIAS")
                 keyPassword = System.getenv("OHSYNC_KEY_PASSWORD")
             }
