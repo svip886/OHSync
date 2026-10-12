@@ -89,17 +89,19 @@ object RemoteConfig {
     }
 
     /**
-     * 报告「这一段历史切片回填完毕」，主进程据此把切片终点往前挪 7 天。
-     * 不报告的话终点会原地踏步，每轮都只能拿到同一批数据。
+     * 报告「这一段回填完了，下一段从 [nextBefore] 往前」。
+     *
+     * 游标由读取端算：只有它知道本段实际取到了哪条最早的数据。早期版本让主进程
+     * 按固定跨度去减，稠密类型撞上单次条数上限时会把中间没取到的那几天永久跳过。
      */
-    fun reportBackfillSliceDone(sliceEnd: Long) {
+    fun reportBackfillSliceDone(nextBefore: Long) {
         if (AppContextHolder.context == null) AppContextHolder.init()
         val ctx = AppContextHolder.context ?: return
         runCatching {
             ctx.contentResolver.call(
                 Uri.parse("content://$OHSYNC_PACKAGE$PROVIDER_SUFFIX"),
                 "backfillSliceDone", null,
-                android.os.Bundle().apply { putLong("sliceEnd", sliceEnd) },
+                android.os.Bundle().apply { putLong("nextBefore", nextBefore) },
             )
         }
     }

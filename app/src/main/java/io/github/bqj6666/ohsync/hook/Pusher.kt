@@ -32,11 +32,11 @@ object Pusher {
     /**
      * 一次推送最多连做几段历史回填。
      *
-     * 6 段 × 14 天 ≈ 84 天，一年多的时间窗大概十几轮就能铺满。别再往上加：
-     * 这段是跑在 OPPO 健康进程里的串行工作，做久了会明显拖慢宿主，而且 Health
-     * Connect 的写入也有配额，一口气灌太多反而容易失败。
+     * 别再往上加：这段是跑在 OPPO 健康进程里的串行工作，做久了会明显拖慢宿主，
+     * 而且 Health Connect 的写入也有配额，一口气灌太多反而容易失败。
+     * 每段的推进量由实际取到的数据决定（稠密类型会小一些），所以这里是"最多试几段"。
      */
-    private const val MAX_SLICES_PER_PUSH = 6
+    private const val MAX_SLICES_PER_PUSH = 10
 
     fun push(reader: TableReader, incremental: Boolean = false) {
         val specs = QueryPlan.forTables(reader, incremental)
@@ -74,17 +74,28 @@ object Pusher {
             rounds++
             val sliceSpecs = QueryPlan.forBackfillSlice(reader, sliceEnd)
             var sliceTotal = 0
+            // 本段真正取到的最早一条记录。游标要挪到「它之前」，而不是机械地减一个
+            // 固定跨度 —— 稠密类型（心率一天几百条）在一段里必然撞上 3000 条上限，
+            // 按固定跨度挪会把这段里没取到的那些天**永久跳过**（早期实现就是这么丢的）。
+            var oldest = Long.MAX_VALUE
             for (spec in sliceSpecs) {
                 val rows = reader.query(spec.sql)
                 val records = rows.mapNotNull(spec.toRecord)
                 if (records.isEmpty()) continue
+                oldest = minOf(oldest, records.minOf { it.startTime })
                 if (send(spec.type.id, records)) sliceTotal += records.size
             }
-            Log.i(TAG, "回填切片 <$sliceEnd 共 $sliceTotal 条")
+            val next = if (oldest == Long.MAX_VALUE) {
+                // 这一段是空的：整段跳过去，别原地打转
+                QueryPlan.sliceLower(sliceEnd)
+            } else {
+                oldest - 1
+            }
+            Log.i(TAG, "回填切片 <$sliceEnd 共 $sliceTotal 条，游标 -> $next")
             total += sliceTotal
-            // 无论这一段有没有数据都要回报，否则终点不会往前挪
-            RemoteConfig.reportBackfillSliceDone(sliceEnd)
-            // 取回挪过的游标；主进程铺满窗口后会返回 0，据此收工
+            // 无论这一段有没有数据都要回报，否则游标不会往前挪
+            RemoteConfig.reportBackfillSliceDone(next)
+            // 取回挪过的游标；主进程判断铺满窗口后会返回 0，据此收工
             sliceEnd = RemoteConfig.fetch(force = true)?.backfillBefore ?: 0L
         }
         if (rounds > 1) Log.i(TAG, "本次连做 $rounds 段历史回填")

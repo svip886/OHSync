@@ -88,14 +88,26 @@ internal object QueryPlan {
      * 为什么需要它：单次推送有 PER_SPEC_LIMIT 上限，且查询固定按时间倒序取「最近 N 条」，
      * 于是每次拿到的都是同一批数据，更早的记录一辈子进不来 —— 表现就是步数只覆盖 15 天、
      * 心率 5 天、血氧 10 天、活动卡路里 8 天（睡眠因为总量小没触上限，所以齐全）。
-     * 周期同步时额外推一段切片，切片终点由主进程下发并逐步往前挪，若干轮后即可铺满窗口。
+     *
+     * 切片终点由主进程下发；**下一段从哪开始由读取端按实际取到的数据决定**
+     * （见 [sliceLower] 与 Pusher 的说明），主进程不再机械地减去一个固定跨度。
      */
     fun forBackfillSlice(reader: TableReader, before: Long): List<TableSpec> {
         if (before <= 0L) return emptyList()
-        val windowStart = System.currentTimeMillis() - windowDays * 86_400_000L
-        val lower = maxOf(windowStart, before - BACKFILL_SLICE_MS)
+        val lower = sliceLower(before)
         if (lower >= before) return emptyList()
         return buildSpecs(reader, lower, before)
+    }
+
+    /**
+     * 一段切片的时间下界（含），同时受时间窗口约束。
+     *
+     * 单独暴露出来是因为「本段没有取到任何数据」时，读取端要把游标直接挪到这里，
+     * 别按固定跨度瞎跳。
+     */
+    fun sliceLower(before: Long): Long {
+        val windowStart = System.currentTimeMillis() - windowDays * 86_400_000L
+        return maxOf(windowStart, before - BACKFILL_SLICE_MS)
     }
 
     private fun buildSpecs(reader: TableReader, lower: Long, upperExclusive: Long): List<TableSpec> {

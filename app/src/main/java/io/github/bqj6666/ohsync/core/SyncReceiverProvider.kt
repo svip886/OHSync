@@ -99,12 +99,13 @@ class SyncReceiverProvider : ContentProvider() {
                 }
                 // Hook 侧完成一次手动同步后回报，避免重复触发
                 "backfillDone" -> engine.clearBackfillRequest()
-                // 读取端报告「这一段历史切片回填完了」→ 终点往前挪一个切片
+                // 读取端报告「这一段回填完了」→ 存下它算好的新游标。
+                // 游标不由这里推算：只有读取端知道本段实际取到了哪条最早的数据，
+                // 主进程按固定跨度去减的话，稠密类型撞上单次条数上限时会把中间
+                // 没取到的那几天永久跳过（早期实现的问题）。
                 "backfillSliceDone" -> {
                     val c = requireNotNull(context)
-                    extras?.getLong("sliceEnd")?.let { sliceEnd ->
-                        // 切片跨度与读取端用的是同一个常量，否则游标会漂
-                        val next = sliceEnd - Ids.BACKFILL_SLICE_MS
+                    extras?.getLong("nextBefore")?.let { next ->
                         val windowStart = System.currentTimeMillis() -
                             Settings.windowDays(c) * 86_400_000L
                         Settings.setBackfillBefore(c, if (next <= windowStart) -1L else next)
