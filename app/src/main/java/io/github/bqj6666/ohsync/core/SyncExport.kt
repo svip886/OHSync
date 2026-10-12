@@ -31,6 +31,7 @@ import androidx.health.connect.client.records.Vo2MaxRecord
 import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Duration
@@ -173,30 +174,42 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
             // （实测「10 年窗口」那次就是靠它定位到卡在中途的）。
             val t0 = System.currentTimeMillis()
             var got = 0
-            runCatching {
-                var token: String? = null
-                var pages = 0
-                do {
-                    val resp = c.readRecords(
-                        ReadRecordsRequest(
-                            recordType = kclass,
-                            timeRangeFilter = filter,
-                            pageSize = PAGE_SIZE,
-                            pageToken = token,
+            // 每个类型单独设超时。实测见过 Health Connect 的读取调用**长时间不返回**
+            // （进程 0% CPU、阻塞在 Binder 上，某一类卡了 3 分钟以上）—— 没有这道闸，
+            // 一个类型能把整次导出拖死。超时后跳过该类型并记为失败，由调用方决定
+            // 要不要放弃这次导出（不会把不完整的结果覆盖出去）。
+            val outcome = runCatching {
+                withTimeoutOrNull(TYPE_TIMEOUT_MS) {
+                    var token: String? = null
+                    var pages = 0
+                    do {
+                        val resp = c.readRecords(
+                            ReadRecordsRequest(
+                                recordType = kclass,
+                                timeRangeFilter = filter,
+                                pageSize = PAGE_SIZE,
+                                pageToken = token,
+                            )
                         )
-                    )
-                    for (r in resp.records) {
-                        onRecord(r, otherSources)
-                        got++
-                    }
-                    token = resp.pageToken
-                    pages++
-                } while (token != null && pages < MAX_PAGES)
-                Log.i(TAG, "${type.label}：$got 条 / $pages 页 / ${System.currentTimeMillis() - t0} ms")
-            }.onFailure {
-                // 最常见的原因是没授这一项的「读」权限 —— 记下来，界面能提示
+                        for (r in resp.records) {
+                            onRecord(r, otherSources)
+                            got++
+                        }
+                        token = resp.pageToken
+                        pages++
+                    } while (token != null && pages < MAX_PAGES)
+                    Log.i(TAG, "${type.label}：$got 条 / $pages 页 / ${System.currentTimeMillis() - t0} ms")
+                }
+            }
+            if (outcome.getOrNull() == null) {
                 failedTypes += type.label
-                Log.w(TAG, "读取 ${type.label} 失败（已读 $got 条）", it)
+                Log.w(TAG, "读取 ${type.label} 超时（${TYPE_TIMEOUT_MS / 1000} 秒，已读 $got 条），跳过")
+            } else {
+                outcome.onFailure {
+                    // 最常见的原因是没授这一项的「读」权限 —— 记下来，界面能提示
+                    failedTypes += type.label
+                    Log.w(TAG, "读取 ${type.label} 失败（已读 $got 条）", it)
+                }
             }
         }
 
@@ -625,6 +638,14 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
 
         /** 单类型最多翻这么多页。防呆：真出现异常多的数据也不至于把进程拖死。 */
         private const val MAX_PAGES = 500
+
+        /**
+         * 单个类型的读取上限。
+         *
+         * 给到 3 分钟是因为首次全量时 HC 的分页本来就慢；但**必须有上限** ——
+         * 实测有类型会长时间不返回（阻塞在 Binder 上），没有闸门整次导出就废了。
+         */
+        private const val TYPE_TIMEOUT_MS = 3 * 60_000L
 
         /** HC 的 stage 取值 → 原脚本用的键名。7（AWAKE_IN_BED）原脚本也归到 unknown。 */
         private val STAGE_NAMES = mapOf(

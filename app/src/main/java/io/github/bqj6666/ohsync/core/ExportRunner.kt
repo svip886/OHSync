@@ -143,6 +143,19 @@ object ExportRunner {
 
         val exporter = SyncExport(c, hc)
         val text = exporter.buildJson(window, otherSources, readFrom, reuse)
+
+        // 有类型读失败就**不发**这一轮。
+        //
+        // 为什么不能照发：增量读时重新读的那几天是**按类型整份重建**的，某个类型没读到
+        // （超时或没权限），那几天的这个类型就会变成空 —— 覆盖上去等于把已有的正确数据
+        // 删掉。宁可这一轮不出新文件（远端保持上一版），也不要发布一份缺数据的版本。
+        val failed = exporter.readFailures
+        if (failed.isNotEmpty()) {
+            return "本轮跳过上传：${failed.size} 类没读到（${failed.take(4).joinToString("、")}）" +
+                "—— 缓存与远端保持上一版不变，下一轮会自动重试；若一直如此，" +
+                "请在下方「授权读取健康数据」重新授权。"
+        }
+
         if (exporter.builtDays.isNotEmpty()) {
             ExportCache.save(c, exporter.builtDays, window, offsetSec, otherSources)
         }
@@ -165,11 +178,7 @@ object ExportRunner {
         ))
         if (err != null) return "上传失败：$err"
 
-        val note = exporter.readFailures
-            .takeIf { it.isNotEmpty() }
-            ?.let { "；${it.size} 类读不到（缺读权限）：${it.take(3).joinToString("、")}" }
-            ?: ""
         return "已上传 gz ${gz.size / 1024} KB（未压缩 ${plain.size / 1024} KB，" +
-            "窗口 $window 天，全量 ${exporter.builtDays.size} 天）$note"
+            "窗口 $window 天，全量 ${exporter.builtDays.size} 天）"
     }
 }
