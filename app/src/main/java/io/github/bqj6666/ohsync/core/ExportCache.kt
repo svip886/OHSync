@@ -75,8 +75,11 @@ object ExportCache {
             // 先写临时文件再改名：中途被杀不会留下一份半截的缓存
             val tmp = File(file(context).parentFile, "$FILE_NAME.tmp")
             tmp.writeText(root.toString())
+            // 大小要在 rename 之前取：改名之后这个 File 对象就指向不存在的路径了，
+            // 取 length() 会得到 0（日志里写 0 KB 会让人以为没存进去）
+            val kb = tmp.length() / 1024
             tmp.renameTo(file(context))
-            Log.i(TAG, "导出缓存已存：${days.size} 天，${tmp.length() / 1024} KB")
+            Log.i(TAG, "导出缓存已存：${days.size} 天，$kb KB")
         }.onFailure { Log.w(TAG, "导出缓存写入失败", it) }
     }
 
