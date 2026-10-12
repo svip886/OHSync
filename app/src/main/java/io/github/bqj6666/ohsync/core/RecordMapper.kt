@@ -6,6 +6,7 @@ import androidx.health.connect.client.records.BloodPressureRecord
 import androidx.health.connect.client.records.BodyFatRecord
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ElevationGainedRecord
+import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.feature.ExperimentalMindfulnessSessionApi
 import androidx.health.connect.client.records.FloorsClimbedRecord
 import androidx.health.connect.client.records.HeartRateRecord
@@ -110,6 +111,14 @@ object RecordMapper {
                         stage = it.stage,
                     )
                 },
+            )
+
+            // 运动会话。HC 的 ExerciseSessionRecord 只承载「会话 + 类型 + 标题」，
+            // 距离/卡路里由各自的独立记录类型承担，这里不重复塞。
+            RecordType.EXERCISE_SESSION -> ExerciseSessionRecord(
+                start, zo, end, zo, metadata(cid),
+                ExerciseTypeMap.toHc(r.metaInt("sportMode", -1)),
+                null, null,
             )
 
             RecordType.BLOOD_PRESSURE -> BloodPressureRecord(
