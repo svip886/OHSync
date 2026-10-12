@@ -152,12 +152,9 @@ object ExportRunner {
         )
         val stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmm").format(OffsetDateTime.now())
         val err = WebDavClient.upload(cfg, linkedMapOf(
-            // 固定名，下游按它取 —— 用 gz，体积只有原来的十分之一量级
+            // 固定名，下游按它取
             "latest.json.gz" to gz,
-            // 紧凑版一起传：下游切到 .gz 之前，老的读取方与人工核对还能用。
-            // 确认不再需要后删掉这一行即可。
-            "latest.json" to plain,
-            // 带时间戳的那份只留归档，也压上：反正没人会手动读它
+            // 带时间戳的那份只留归档，同样压上
             "health-$stamp.json.gz" to gz,
         ))
         if (err != null) return "上传失败：$err"
@@ -166,7 +163,7 @@ object ExportRunner {
             .takeIf { it.isNotEmpty() }
             ?.let { "；${it.size} 类读不到（缺读权限）：${it.take(3).joinToString("、")}" }
             ?: ""
-        return "已上传 gz ${gz.size / 1024} KB / 紧凑 json ${plain.size / 1024} KB" +
-            "（窗口 $window 天，全量 ${exporter.builtDays.size} 天）$note"
+        return "已上传 gz ${gz.size / 1024} KB（未压缩 ${plain.size / 1024} KB，" +
+            "窗口 $window 天，全量 ${exporter.builtDays.size} 天）$note"
     }
 }
