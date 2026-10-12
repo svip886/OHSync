@@ -5,7 +5,9 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 
@@ -22,6 +24,9 @@ import java.time.format.DateTimeFormatter
 object ExportRunner {
 
     private const val TAG = "OHSyncExport"
+
+    /** 单次导出的时间上限。实测有过一次「读到一半没动静」，必须有兜底。 */
+    private const val TIMEOUT_MS = 5 * 60_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -68,7 +73,12 @@ object ExportRunner {
         SyncEngine.noteExportStart()
         scope.launch {
             val result = try {
-                doExport(c)
+                withTimeout(TIMEOUT_MS) { doExport(c) }
+            } catch (t: TimeoutCancellationException) {
+                // 实测有过一次：窗口 10 年时读 HC 读到一半就没动静了。
+                // 光靠日志看不出卡在哪，所以既加了每类型的耗时日志，也加了这道兜底。
+                Log.w(TAG, "导出超时", t)
+                "导出超时（超过 ${TIMEOUT_MS / 60_000} 分钟），已放弃。把导出窗口调小一些会更稳。"
             } catch (t: Throwable) {
                 Log.e(TAG, "导出失败", t)
                 "导出失败：${t.message ?: t.javaClass.simpleName}"
@@ -85,9 +95,13 @@ object ExportRunner {
         val hc = HcClient(c)
         if (hc.client == null) return "导出失败：Health Connect 不可用"
 
-        val window = Settings.windowDays(c)
+        // 用**导出窗口**而不是同步窗口：同步可以把「全部」都补进 HC，导出不必跟着跑那么远
+        val window = Settings.exportWindowDays(c)
         val exporter = SyncExport(c, hc)
-        val json = exporter.buildJson(window, Settings.exportOtherSources(c))
+        val text = exporter.buildJson(window, Settings.exportOtherSources(c))
+        val plain = WebDavClient.bytes(text)
+        val gz = WebDavClient.gzip(text)
+        Log.i(TAG, "JSON ${plain.size / 1024} KB，gzip 后 ${gz.size / 1024} KB")
 
         val cfg = WebDavClient.Config(
             url = Settings.webdavUrl(c),
@@ -96,11 +110,14 @@ object ExportRunner {
             path = Settings.webdavPath(c),
         )
         val stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmm").format(OffsetDateTime.now())
-        val bytes = WebDavClient.bytes(json)
         val err = WebDavClient.upload(cfg, linkedMapOf(
-            // latest.json 是固定名，下游按它取；带时间戳的那份用于回溯
-            "latest.json" to bytes,
-            "health-$stamp.json" to bytes,
+            // 固定名，下游按它取 —— 用 gz，体积只有原来的十分之一量级
+            "latest.json.gz" to gz,
+            // 紧凑版一起传：下游切到 .gz 之前，老的读取方与人工核对还能用。
+            // 确认不再需要后删掉这一行即可。
+            "latest.json" to plain,
+            // 带时间戳的那份只留归档，也压上：反正没人会手动读它
+            "health-$stamp.json.gz" to gz,
         ))
         if (err != null) return "上传失败：$err"
 
@@ -108,6 +125,6 @@ object ExportRunner {
             .takeIf { it.isNotEmpty() }
             ?.let { "；${it.size} 类读不到（缺读权限）：${it.take(3).joinToString("、")}" }
             ?: ""
-        return "已上传 ${bytes.size / 1024} KB（窗口 $window 天）$note"
+        return "已上传 gz ${gz.size / 1024} KB / 紧凑 json ${plain.size / 1024} KB（窗口 $window 天）$note"
     }
 }

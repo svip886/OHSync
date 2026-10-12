@@ -151,6 +151,10 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
 
         for (type in EXPORT_TYPES) {
             val kclass = hcRecordKClass(type) ?: continue
+            // 每个类型都记一条耗时。导出慢或卡住时，这是唯一能看出卡在哪一类的地方
+            // （实测「10 年窗口」那次就是靠它定位到卡在中途的）。
+            val t0 = System.currentTimeMillis()
+            var got = 0
             runCatching {
                 var token: String? = null
                 var pages = 0
@@ -163,14 +167,18 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
                             pageToken = token,
                         )
                     )
-                    for (r in resp.records) onRecord(r, otherSources)
+                    for (r in resp.records) {
+                        onRecord(r, otherSources)
+                        got++
+                    }
                     token = resp.pageToken
                     pages++
                 } while (token != null && pages < MAX_PAGES)
+                Log.i(TAG, "${type.label}：$got 条 / $pages 页 / ${System.currentTimeMillis() - t0} ms")
             }.onFailure {
                 // 最常见的原因是没授这一项的「读」权限 —— 记下来，界面能提示
                 failedTypes += type.label
-                Log.w(TAG, "读取 ${type.label} 失败", it)
+                Log.w(TAG, "读取 ${type.label} 失败（已读 $got 条）", it)
             }
         }
 
@@ -474,7 +482,10 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
             .put("read_failed_types", JSONArray(failedTypes))
             .put("days", daysJson)
             .put("sources", sources)
-            .toString(1)
+            // 紧凑输出（不带缩进）。缩进版实测 1072 KB，紧凑后 527 KB —— 这份文件
+            // 每次同步都要重传一遍，白送的空白不值得。人要看的话上传的是 gz，
+            // 本地解压后随便找个 json 工具格式化即可。
+            .toString()
     }
 
     private fun appLabel(pkg: String): String = runCatching {

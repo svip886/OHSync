@@ -415,6 +415,7 @@ private fun WebDavCard(status: SyncStatus, readMissing: Int, onAuthRead: () -> U
     var pass by remember { mutableStateOf(Settings.webdavPass(ctx)) }
     var path by remember { mutableStateOf(Settings.webdavPath(ctx)) }
     var otherSources by remember { mutableStateOf(Settings.exportOtherSources(ctx)) }
+    var exportWindow by remember { mutableStateOf(Settings.exportWindowDays(ctx)) }
 
     fun save() {
         Settings.setWebDav(ctx, url, user, pass, path)
@@ -483,6 +484,19 @@ private fun WebDavCard(status: SyncStatus, readMissing: Int, onAuthRead: () -> U
             )
 
             HorizontalDivider()
+
+            Text("导出窗口", style = MaterialTheme.typography.bodyMedium)
+            ChipRow(
+                options = Settings.EXPORT_WINDOW_OPTIONS,
+                selected = exportWindow,
+                onSelect = { exportWindow = it; Settings.setExportWindowDays(ctx, it) },
+            )
+            Text(
+                "与上面的「回填时间范围」相互独立：回填可以把「全部」都同步进 Health Connect，" +
+                    "但导出不必跟着跑那么远（实测跟着 10 年导出是 1 MB / 好几分钟）。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

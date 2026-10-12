@@ -27,6 +27,7 @@ object Settings {
     private const val KEY_LAST_EXPORT_AT = "last_export_at"
     private const val KEY_LAST_EXPORT_RESULT = "last_export_result"
     private const val KEY_EXPORT_OTHER_SOURCES = "export_other_sources"
+    private const val KEY_EXPORT_WINDOW = "export_window_days"
 
     /** 同步间隔选项。0 表示只在手动点「立即同步」时才推。 */
     val INTERVAL_OPTIONS: List<Pair<Int, String>> = listOf(
@@ -220,6 +221,27 @@ object Settings {
     fun setExportOtherSources(context: Context, on: Boolean) {
         prefs(context).edit().putBoolean(KEY_EXPORT_OTHER_SOURCES, on).apply()
     }
+
+    /**
+     * 导出窗口（天）。**与同步窗口分开**。
+     *
+     * 同步窗口可以是「全部」（把 2016 年以来的记录都补进 Health Connect），但导出不该
+     * 跟着跑那么远：实测跟着 10 年窗口导，JSON 1 MB、耗时几分钟，而且中途还卡住过一次。
+     * 默认 365 天，与原脚本的窗口一致，下游的覆盖率口径也不用改。
+     */
+    fun exportWindowDays(context: Context): Int =
+        prefs(context).getInt(KEY_EXPORT_WINDOW, DEFAULT_EXPORT_WINDOW)
+
+    fun setExportWindowDays(context: Context, days: Int) {
+        prefs(context).edit().putInt(KEY_EXPORT_WINDOW, days).apply()
+    }
+
+    /** 导出窗口选项（比同步窗口少一档"全部"：导出不需要那么远）。 */
+    val EXPORT_WINDOW_OPTIONS: List<Pair<Int, String>> =
+        WINDOW_OPTIONS.filter { it.first <= 730 }
+
+    /** 导出窗口默认 1 年，与原脚本一致。 */
+    const val DEFAULT_EXPORT_WINDOW = 365
 
     /** 两次自动上传之间的最小间隔（分钟）。 */
     const val DEFAULT_EXPORT_MIN_GAP = 30
