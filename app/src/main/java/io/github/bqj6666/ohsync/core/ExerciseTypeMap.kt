@@ -157,6 +157,60 @@ internal object ExerciseTypeMap {
         else -> "other_workout"
     }
 
+    /**
+     * Health Connect 的 EXERCISE_TYPE_* 常量 → 类型名。
+     *
+     * 与 [nameOf] 是同一张表的两个方向：[nameOf] 从 OPPO 的 sport_mode 出发
+     * （写入时用），这里从 HC 常量出发（导出时给没有 title 的老记录兜底）。
+     * 两处必须同步增改，否则老记录的类型名会退化。
+     */
+    fun nameOfHc(hcType: Int): String = when (hcType) {
+        ExerciseSessionRecord.EXERCISE_TYPE_WALKING -> "walking"
+        ExerciseSessionRecord.EXERCISE_TYPE_RUNNING -> "running"
+        ExerciseSessionRecord.EXERCISE_TYPE_RUNNING_TREADMILL -> "running_treadmill"
+        ExerciseSessionRecord.EXERCISE_TYPE_BIKING -> "biking"
+        ExerciseSessionRecord.EXERCISE_TYPE_BIKING_STATIONARY -> "biking_stationary"
+        ExerciseSessionRecord.EXERCISE_TYPE_SWIMMING_POOL -> "swimming_pool"
+        ExerciseSessionRecord.EXERCISE_TYPE_SWIMMING_OPEN_WATER -> "swimming_open_water"
+        ExerciseSessionRecord.EXERCISE_TYPE_HIKING -> "hiking"
+        ExerciseSessionRecord.EXERCISE_TYPE_ROCK_CLIMBING -> "rock_climbing"
+        ExerciseSessionRecord.EXERCISE_TYPE_BADMINTON -> "badminton"
+        ExerciseSessionRecord.EXERCISE_TYPE_TABLE_TENNIS -> "table_tennis"
+        ExerciseSessionRecord.EXERCISE_TYPE_BASKETBALL -> "basketball"
+        ExerciseSessionRecord.EXERCISE_TYPE_SOCCER -> "soccer"
+        ExerciseSessionRecord.EXERCISE_TYPE_VOLLEYBALL -> "volleyball"
+        ExerciseSessionRecord.EXERCISE_TYPE_TENNIS -> "tennis"
+        ExerciseSessionRecord.EXERCISE_TYPE_BASEBALL -> "baseball"
+        ExerciseSessionRecord.EXERCISE_TYPE_SOFTBALL -> "softball"
+        ExerciseSessionRecord.EXERCISE_TYPE_FOOTBALL_AMERICAN -> "football_american"
+        ExerciseSessionRecord.EXERCISE_TYPE_CRICKET -> "cricket"
+        ExerciseSessionRecord.EXERCISE_TYPE_GOLF -> "golf"
+        ExerciseSessionRecord.EXERCISE_TYPE_ELLIPTICAL -> "elliptical"
+        ExerciseSessionRecord.EXERCISE_TYPE_ROWING_MACHINE -> "rowing_machine"
+        ExerciseSessionRecord.EXERCISE_TYPE_ROWING -> "rowing"
+        ExerciseSessionRecord.EXERCISE_TYPE_STAIR_CLIMBING_MACHINE -> "stair_climbing_machine"
+        ExerciseSessionRecord.EXERCISE_TYPE_EXERCISE_CLASS -> "exercise_class"
+        ExerciseSessionRecord.EXERCISE_TYPE_YOGA -> "yoga"
+        ExerciseSessionRecord.EXERCISE_TYPE_GUIDED_BREATHING -> "guided_breathing"
+        ExerciseSessionRecord.EXERCISE_TYPE_PILATES -> "pilates"
+        ExerciseSessionRecord.EXERCISE_TYPE_DANCING -> "dancing"
+        ExerciseSessionRecord.EXERCISE_TYPE_STRENGTH_TRAINING -> "strength_training"
+        ExerciseSessionRecord.EXERCISE_TYPE_BOXING -> "boxing"
+        ExerciseSessionRecord.EXERCISE_TYPE_FENCING -> "fencing"
+        ExerciseSessionRecord.EXERCISE_TYPE_GYMNASTICS -> "gymnastics"
+        ExerciseSessionRecord.EXERCISE_TYPE_MARTIAL_ARTS -> "martial_arts"
+        ExerciseSessionRecord.EXERCISE_TYPE_SKIING -> "skiing"
+        ExerciseSessionRecord.EXERCISE_TYPE_ICE_SKATING -> "ice_skating"
+        ExerciseSessionRecord.EXERCISE_TYPE_SKATING -> "skating"
+        ExerciseSessionRecord.EXERCISE_TYPE_SURFING -> "surfing"
+        ExerciseSessionRecord.EXERCISE_TYPE_SAILING -> "sailing"
+        ExerciseSessionRecord.EXERCISE_TYPE_PADDLING -> "paddling"
+        ExerciseSessionRecord.EXERCISE_TYPE_WATER_POLO -> "water_polo"
+        ExerciseSessionRecord.EXERCISE_TYPE_SCUBA_DIVING -> "scuba_diving"
+        ExerciseSessionRecord.EXERCISE_TYPE_FRISBEE_DISC -> "frisbee_disc"
+        else -> "other_workout"
+    }
+
     // ---- OPPO com.heytap.databaseengine.type.SportMode 的实测取值 ----
     private const val WALK = 1
     private const val RUN = 2

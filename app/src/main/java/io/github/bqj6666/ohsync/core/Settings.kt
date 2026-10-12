@@ -18,6 +18,15 @@ object Settings {
     private const val KEY_BACKFILL_BEFORE = "backfill_before"
     private const val KEY_LAST_RESTART = "last_health_restart_at"
     private const val KEY_ROOT_STATE = "root_state"
+    private const val KEY_WEBDAV_URL = "webdav_url"
+    private const val KEY_WEBDAV_USER = "webdav_user"
+    private const val KEY_WEBDAV_PASS = "webdav_pass"
+    private const val KEY_WEBDAV_PATH = "webdav_path"
+    private const val KEY_EXPORT_ENABLED = "export_enabled"
+    private const val KEY_EXPORT_MIN_GAP = "export_min_gap_min"
+    private const val KEY_LAST_EXPORT_AT = "last_export_at"
+    private const val KEY_LAST_EXPORT_RESULT = "last_export_result"
+    private const val KEY_EXPORT_OTHER_SOURCES = "export_other_sources"
 
     /** 同步间隔选项。0 表示只在手动点「立即同步」时才推。 */
     val INTERVAL_OPTIONS: List<Pair<Int, String>> = listOf(
@@ -138,6 +147,82 @@ object Settings {
     const val ROOT_UNKNOWN = -1
     const val ROOT_NO = 0
     const val ROOT_YES = 1
+
+    // ---- WebDAV 导出 --------------------------------------------------------
+    //
+    // 凭据只存在本应用的私有 SharedPreferences 里（清单里 allowBackup=false，
+    // 不会被备份出去）。**绝不写进代码或仓库**：仓库是公开 fork，
+    // 写死就等于把坚果云账号送人。
+
+    fun webdavUrl(context: Context): String = prefs(context).getString(KEY_WEBDAV_URL, "") ?: ""
+
+    fun webdavUser(context: Context): String = prefs(context).getString(KEY_WEBDAV_USER, "") ?: ""
+
+    fun webdavPass(context: Context): String = prefs(context).getString(KEY_WEBDAV_PASS, "") ?: ""
+
+    /** 远端存放目录，拼在 [webdavUrl] 后面。默认 health。 */
+    fun webdavPath(context: Context): String =
+        prefs(context).getString(KEY_WEBDAV_PATH, "health")?.takeIf { it.isNotBlank() } ?: "health"
+
+    fun setWebDav(context: Context, url: String, user: String, pass: String, path: String) {
+        prefs(context).edit()
+            .putString(KEY_WEBDAV_URL, url.trim())
+            .putString(KEY_WEBDAV_USER, user.trim())
+            .putString(KEY_WEBDAV_PASS, pass.trim())
+            .putString(KEY_WEBDAV_PATH, path.trim().ifBlank { "health" })
+            .apply()
+    }
+
+    /** 三项都填了才算配好。 */
+    fun webDavReady(context: Context): Boolean =
+        webdavUrl(context).isNotBlank() && webdavUser(context).isNotBlank() &&
+            webdavPass(context).isNotBlank()
+
+    /** 是否开启导出（关闭后不自动上传，「立即上传」也拦着）。 */
+    fun exportEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_EXPORT_ENABLED, false)
+
+    fun setExportEnabled(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean(KEY_EXPORT_ENABLED, on).apply()
+    }
+
+    /** 两次自动上传之间的最小间隔。同步很频繁时不该反复生成整份 JSON。 */
+    fun exportMinGapMinutes(context: Context): Int =
+        prefs(context).getInt(KEY_EXPORT_MIN_GAP, DEFAULT_EXPORT_MIN_GAP)
+
+    fun setExportMinGapMinutes(context: Context, minutes: Int) {
+        prefs(context).edit().putInt(KEY_EXPORT_MIN_GAP, minutes).apply()
+    }
+
+    fun lastExportAt(context: Context): Long = prefs(context).getLong(KEY_LAST_EXPORT_AT, 0L)
+
+    fun setLastExportAt(context: Context, at: Long) {
+        prefs(context).edit().putLong(KEY_LAST_EXPORT_AT, at).apply()
+    }
+
+    fun lastExportResult(context: Context): String =
+        prefs(context).getString(KEY_LAST_EXPORT_RESULT, "") ?: ""
+
+    fun setLastExportResult(context: Context, text: String) {
+        prefs(context).edit().putString(KEY_LAST_EXPORT_RESULT, text).apply()
+    }
+
+    /**
+     * 导出时是否把**别的应用**写进 Health Connect 的记录也算进当日值。
+     *
+     * 默认关：步数这类数据一旦混入 Google Play 服务写的记录就会偏高（实测同一
+     * 天 1822 vs 1486）。开着的时候来源分层的明细照样给出来，能看出是谁贡献的。
+     * 将来华为体脂秤经 Health Sync 进来时，体重要单独看别的源的记录，再开。
+     */
+    fun exportOtherSources(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_EXPORT_OTHER_SOURCES, false)
+
+    fun setExportOtherSources(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean(KEY_EXPORT_OTHER_SOURCES, on).apply()
+    }
+
+    /** 两次自动上传之间的最小间隔（分钟）。 */
+    const val DEFAULT_EXPORT_MIN_GAP = 30
 
     /** 默认 1 小时：够及时，也不至于反复扫库。 */
     const val DEFAULT_INTERVAL = 60

@@ -58,6 +58,10 @@ data class SyncStatus(
     val rootGranted: Boolean? = null,
     /** 读取端回报的数据库状态。null = 还没回报过。 */
     val readerDbReady: Boolean? = null,
+    /** 正在生成并上传那份导出 JSON。 */
+    val exporting: Boolean = false,
+    /** 上次导出结果（成功摘要或失败原因）。 */
+    val lastExportResult: String? = null,
 ) {
     val healthy: Boolean get() = hookConnected && hcPermissionGranted && lastError == null
 }

@@ -259,6 +259,26 @@ object SyncEngine {
         }
     }
 
+    // ---- 导出（WebDAV） ------------------------------------------------------
+
+    fun noteExportStart() {
+        _status.value = _status.value.copy(exporting = true)
+        log("正在生成导出数据…")
+    }
+
+    fun noteExportResult(result: String) {
+        _status.value = _status.value.copy(exporting = false, lastExportResult = result)
+        log(result)
+    }
+
+    /** 界面重开后把上次的导出结果读回来，免得一片空白。 */
+    fun restoreExportStatus(context: Context) {
+        val text = Settings.lastExportResult(context)
+        if (text.isNotBlank()) {
+            _status.value = _status.value.copy(lastExportResult = text)
+        }
+    }
+
     /**
      * 问一次读取端是否在线。
      *

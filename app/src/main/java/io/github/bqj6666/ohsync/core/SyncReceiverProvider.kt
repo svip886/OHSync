@@ -125,6 +125,10 @@ class SyncReceiverProvider : ContentProvider() {
                         Settings.setLastSyncAt(requireNotNull(context), it)
                     }
                     engine.clearBackfillRequest()
+                    // 一次推送真正结束 —— 这是触发 WebDAV 导出的时机（按最小间隔节流）。
+                    // 放在这里而不是每批数据之后：一次同步有十几批，只有全部写完
+                    // 导出的 JSON 才是完整的。
+                    ExportRunner.maybeAuto(requireNotNull(context))
                 }
                 "requestBackfill" -> engine.requestBackfill()
                 else -> Unit

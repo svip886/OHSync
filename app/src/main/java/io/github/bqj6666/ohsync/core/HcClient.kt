@@ -39,6 +39,27 @@ class HcClient(private val context: Context) {
         }
     }
 
+    /**
+     * 导出要用到的**读**权限。
+     *
+     * 与 [requiredPermissions] 分开：写入是同步的必需项，读取只影响 WebDAV 导出。
+     * 混在一起会让「写入权限」的判断把没授权的读权限也算进去，界面就会误报
+     * 「不能写入」—— 实测过这种误导。
+     */
+    val readPermissions: Set<String> = buildSet {
+        for (type in SyncExport.EXPORT_TYPES) {
+            val kclass = hcRecordKClass(type) ?: continue
+            runCatching { HealthPermission.getReadPermission(kclass) }
+                .getOrNull()?.let { add(it) }
+        }
+    }
+
+    /** 供导出前的检查：还差哪些读权限。 */
+    fun missingReadPermissions(): List<String> =
+        readPermissions.filter { context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+
+    fun isReadGranted(): Boolean = readPermissions.isNotEmpty() && missingReadPermissions().isEmpty()
+
     init {
         val missing = missingPermissions()
         Log.i(

@@ -18,6 +18,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -34,7 +35,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import io.github.bqj6666.ohsync.core.ExportRunner
 import io.github.bqj6666.ohsync.core.HcClient
 import io.github.bqj6666.ohsync.core.RecordType
 import io.github.bqj6666.ohsync.core.Settings
@@ -95,7 +98,17 @@ fun OHSyncScreen() {
         SyncEngine.notePermission(hc.isWriteGranted())
         SyncEngine.pingReader()
         SyncEngine.refreshRootState(ctx)
+        SyncEngine.restoreExportStatus(ctx)
     }
+
+    /**
+     * 读权限的授权入口。单独一条，因为「写入」是同步的必需项、「读取」只影响导出：
+     * 混在一次请求里，用户为了导出而授权失败时会连带以为同步也坏了。
+     */
+    val readPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { }
+    fun openReadAuth() = readPermissionLauncher.launch(hc.readPermissions.toTypedArray())
 
     Scaffold(topBar = { TopAppBar(title = { Text("OHSync") }) }) { pad ->
         LazyColumn(
@@ -179,6 +192,13 @@ fun OHSyncScreen() {
                 )
             }
             item { DataCard() }
+            item {
+                WebDavCard(
+                    status = status,
+                    readMissing = hc.missingReadPermissions().size,
+                    onAuthRead = { openReadAuth() },
+                )
+            }
             item { DiscardedCard() }
             item { LogCard(showLogs, logs) { showLogs = !showLogs } }
         }
@@ -379,10 +399,146 @@ private fun DataCard() {
     }
 }
 
+/**
+ * WebDAV 导出（坚果云）。
+ *
+ * 这份 JSON 原先靠手机上的内核模块 + hc-export.py 生成并上传（需要 root）。现在整条
+ * 链都搬进应用，所以服务地址与凭据要在这里填。**凭据只写进本应用的私有存储**，
+ * 不进代码仓库，也不参与系统备份（清单里 allowBackup=false）。
+ */
+@Composable
+private fun WebDavCard(status: SyncStatus, readMissing: Int, onAuthRead: () -> Unit) {
+    val ctx = LocalContext.current
+    var enabled by remember { mutableStateOf(Settings.exportEnabled(ctx)) }
+    var url by remember { mutableStateOf(Settings.webdavUrl(ctx)) }
+    var user by remember { mutableStateOf(Settings.webdavUser(ctx)) }
+    var pass by remember { mutableStateOf(Settings.webdavPass(ctx)) }
+    var path by remember { mutableStateOf(Settings.webdavPath(ctx)) }
+    var otherSources by remember { mutableStateOf(Settings.exportOtherSources(ctx)) }
+
+    fun save() {
+        Settings.setWebDav(ctx, url, user, pass, path)
+        Settings.setExportEnabled(ctx, enabled)
+        Settings.setExportOtherSources(ctx, otherSources)
+    }
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("WebDAV 导出（坚果云）", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "把 Health Connect 里本应用写入的数据整理成一份 JSON 传到 WebDAV。" +
+                    "以前这套要靠 root + 内核模块 + 外部脚本，现在应用自己就能做。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("启用导出", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "开启后每次同步完成会自动上传（30 分钟内不重复传）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = { enabled = it; Settings.setExportEnabled(ctx, it) },
+                )
+            }
+
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it },
+                label = { Text("服务地址") },
+                placeholder = { Text("https://dav.jianguoyun.com/dav/") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = user,
+                onValueChange = { user = it },
+                label = { Text("账号") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = pass,
+                onValueChange = { pass = it },
+                label = { Text("密码 / 应用密码") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = path,
+                onValueChange = { path = it },
+                label = { Text("远端目录") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            HorizontalDivider()
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("纳入其他应用来源", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "默认只导出本应用写入的记录。开着会把别的应用写进 Health Connect 的" +
+                            "数据也算进当日值（步数这类会偏高），来源分层明细始终都会给出。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
+                Switch(
+                    checked = otherSources,
+                    onCheckedChange = { otherSources = it; Settings.setExportOtherSources(ctx, it) },
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { save() }, modifier = Modifier.weight(1f)) { Text("保存") }
+                Button(
+                    onClick = { save(); ExportRunner.runNow(ctx) },
+                    enabled = !status.exporting,
+                    modifier = Modifier.weight(1f),
+                ) { Text(if (status.exporting) "导出中…" else "保存并上传") }
+            }
+
+            if (readMissing > 0) {
+                Text(
+                    "还有 $readMissing 项「读取」权限没授予，导出会缺这些类型的数据。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Button(onClick = onAuthRead, modifier = Modifier.fillMaxWidth()) {
+                    Text("授权读取健康数据")
+                }
+            }
+
+            status.lastExportResult?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall)
+            }
+            Text(
+                "凭据只存在本应用的私有存储里：不进代码仓库，也不参与系统备份。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+        }
+    }
+}
+
 /** Health Connect 没有对应记录类型的数据，明确列出来，不静默丢弃。 */
 @Composable
-private fun DiscardedCard() {
-    val discarded = RecordType.discarded
+private fun DiscardedCard() {    val discarded = RecordType.discarded
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("不同步的数据（共 ${discarded.size} 类）", style = MaterialTheme.typography.titleMedium)
