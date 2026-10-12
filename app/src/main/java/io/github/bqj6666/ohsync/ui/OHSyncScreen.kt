@@ -526,6 +526,18 @@ private fun WebDavCard(status: SyncStatus, readMissing: Int, onAuthRead: () -> U
                     modifier = Modifier.weight(1f),
                 ) { Text(if (status.exporting) "导出中…" else "保存并上传") }
             }
+            OutlinedButton(
+                onClick = { save(); ExportRunner.runFullRebuild(ctx) },
+                enabled = !status.exporting,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("全量重建并上传") }
+            Text(
+                "日常上传只重读最近几天的 Health Connect 记录，与本地缓存合并后传出去的仍是" +
+                    "整个窗口的全量，所以很快。只有换了窗口/时区/来源、或怀疑数据有出入时，" +
+                    "才需要「全量重建」。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
 
             if (readMissing > 0) {
                 Text(

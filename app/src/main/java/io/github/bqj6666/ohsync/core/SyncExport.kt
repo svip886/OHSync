@@ -126,6 +126,12 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
     /** 设备当前时区。HC 里老记录存的偏移是 0（当年写的时候没带），回落用这个。 */
     private val localOffset: ZoneOffset = OffsetDateTime.now().offset
 
+    /** 本轮读出来（而不是从缓存拿）的那些天。调用方把它整份存回缓存。 */
+    val builtDays = HashMap<String, JSONObject>()
+
+    /** 读到的来源。用于顶层 sources 映射。 */
+    private val exportSources = LinkedHashMap<String, String>()
+
     private fun offOf(zo: ZoneOffset?): ZoneOffset =
         if (zo == null || zo.totalSeconds == 0) localOffset else zo
 
@@ -141,13 +147,25 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
      * @param windowDays 导出窗口（天）
      * @param otherSources true 表示把别的应用写进 HC 的记录也算进当日值
      *        （默认 false：只算本应用写的，避免步数这类被多来源叠加）
-     * @return JSON 文本
+     * @param readFromMillis 只从这个时刻之后读 HC（增量）。null = 把整个窗口读一遍。
+     *        传值时必须**落在某一天的起点**：那之前的日期一律沿用 [cachedDays]，
+     *        因为按天归属的结果只可能落在读起点当天或之后，不会有半天的残缺。
+     * @param cachedDays 上次整理好的按天结果（[builtDays] 存下来的那份）
+     * @return JSON 文本（**始终是整个窗口的全量**，不因为增量读而缺天）
      */
-    suspend fun buildJson(windowDays: Int, otherSources: Boolean): String {
+    suspend fun buildJson(
+        windowDays: Int,
+        otherSources: Boolean,
+        readFromMillis: Long? = null,
+        cachedDays: Map<String, JSONObject> = emptyMap(),
+    ): String {
         val c = hc.client ?: throw IllegalStateException("Health Connect 不可用")
         val end = Instant.now()
         val start = end.minus(Duration.ofDays(windowDays.toLong()))
-        val filter = TimeRangeFilter.between(start, end)
+        val readStart = readFromMillis
+            ?.takeIf { it > start.toEpochMilli() && it < end.toEpochMilli() }
+            ?: start.toEpochMilli()
+        val filter = TimeRangeFilter.between(Instant.ofEpochMilli(readStart), end)
 
         for (type in EXPORT_TYPES) {
             val kclass = hcRecordKClass(type) ?: continue
@@ -185,7 +203,7 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
         calSeries.sortBy { it.first }
         distSeries.sortBy { it.first }
         hrSeries.sortBy { it.first }
-        return render(windowDays, start, end)
+        return render(windowDays, start, end, cachedDays)
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -394,14 +412,34 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
 
     // ---- 渲染 ---------------------------------------------------------------
 
-    private fun render(windowDays: Int, start: Instant, end: Instant): String {
+    private fun render(
+        windowDays: Int,
+        start: Instant,
+        end: Instant,
+        cachedDays: Map<String, JSONObject>,
+    ): String {
         // 先把运动按日分好，避免在外层按天循环里把 658 条重复扫 366 遍
         val exByDay = HashMap<String, ArrayList<Exercise>>()
         for (e in exercises) exByDay.getOrPut(dayOf(e.start, e.startZo)) { ArrayList() } += e
 
+        // 本轮新读的天 + 缓存里还留在窗口内的天。增量读时 [days] 只有最近几天，
+        // 其余全靠缓存 —— 但拼出来的仍然是完整窗口，这一点是这份导出的硬要求。
+        val windowStartDate = dayOf(start, null)
+        val keys = LinkedHashSet<String>()
+        keys += days.keys.filter { it >= windowStartDate }
+        keys += cachedDays.keys.filter { it >= windowStartDate }
+
         val daysJson = JSONArray()
-        for (key in days.keys.sortedDescending()) {
-            val d = days.getValue(key)
+        for (key in keys.sortedDescending()) {
+            val d = days[key]
+            if (d == null) {
+                // 取自缓存：它已经是渲染好的天对象，直接放进去
+                cachedDays[key]?.let {
+                    builtDays[key] = it
+                    daysJson.put(it)
+                }
+                continue
+            }
             val o = JSONObject()
             o.put("date", key)
             o.put("steps", d.steps)
@@ -466,11 +504,16 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
                 metrics.put(table, t)
             }
             o.put("metrics", metrics)
+            collectSources(ss, metrics)
+            builtDays[key] = o
             daysJson.put(o)
         }
 
+        // 顶层 sources 从**最终的天对象**里归纳（而不是只看本轮读到什么）：
+        // 增量读时只会看到本应用，但缓存里的旧来源名字不该因此消失。
+        seenOrigins.forEach { collectSourceName(it) }
         val sources = JSONObject()
-        seenOrigins.forEach { sources.put(it, appLabel(it)) }
+        exportSources.forEach { (pkg, name) -> sources.put(pkg, name) }
 
         return JSONObject()
             .put("generated_at", STAMP.format(OffsetDateTime.now()))
@@ -486,6 +529,22 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
             // 每次同步都要重传一遍，白送的空白不值得。人要看的话上传的是 gz，
             // 本地解压后随便找个 json 工具格式化即可。
             .toString()
+    }
+
+
+    /** 把天对象里的来源分层收进 [exportSources]，供顶层 sources 映射用。 */
+    private fun collectSources(stepsSources: JSONObject, metrics: JSONObject) {
+        stepsSources.keys().forEach { collectSourceName(it) }
+        val tables = metrics.keys()
+        while (tables.hasNext()) {
+            val t = metrics.optJSONObject(tables.next()) ?: continue
+            t.optJSONObject("sources")?.keys()?.forEach { collectSourceName(it) }
+        }
+    }
+
+    private fun collectSourceName(pkg: String) {
+        if (exportSources.containsKey(pkg)) return
+        exportSources[pkg] = appLabel(pkg)
     }
 
     private fun appLabel(pkg: String): String = runCatching {
@@ -524,6 +583,14 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
 
     companion object {
         private const val TAG = "OHSyncExport"
+
+        /**
+         * 设备当前时区偏移（秒）。
+         *
+         * 缓存的有效性判断与增量读起点都用它算，必须和实例里的 [localOffset] 同源，
+         * 否则跨零点时会算出不同的「当天」。
+         */
+        val localOffsetSeconds: Int get() = OffsetDateTime.now().offset.totalSeconds
 
         /**
          * 参与导出的类型。
