@@ -54,7 +54,8 @@ object ExportRunner {
             Log.i(TAG, "距上次导出不足 ${gapMs / 60_000} 分钟，跳过")
             return
         }
-        run(c)
+        // 自动导出走增量读 + 合并缓存；全量重建只留给用户手动触发
+        run(c, full = false)
     }
 
     /** 界面上的「立即上传」：增量读 + 与缓存合并，然后上传全量。 */
