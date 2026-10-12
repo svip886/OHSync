@@ -20,6 +20,7 @@ object Probe {
         sleepSessions(reader)
         sportSamples(reader)
         bodySamples(reader)
+        sportRecordTables(reader)
     }
 
     /**
@@ -90,6 +91,68 @@ object Probe {
             }
         }
     }
+
+    /**
+     * 运动会话表的体检。
+     *
+     * 背景：1.1.0 之前完全没有同步运动记录，所以先确认「运动落在哪张表、有多少条、
+     * sport_mode 都取了哪些值」，再决定读哪张、怎么映射。
+     *
+     * 表名取自 sqlite_master，列名取自 PRAGMA table_info —— 都是运行时真实结构。只读。
+     */
+    private fun sportRecordTables(reader: TableReader) {
+        val present = reader.tableNames().toSet()
+        for (table in SPORT_TABLES) {
+            if (table !in present) {
+                Log.i(TAG, "[运动表] $table 不存在")
+                continue
+            }
+            val cols = reader.columns(table)
+            val count = reader.query("SELECT COUNT(*) AS c FROM $table")
+                .firstOrNull()?.get("c")
+            Log.i(TAG, "[运动表] $table 共 $count 行")
+            Log.i(TAG, "  列: ${cols.sorted().joinToString()}")
+
+            if ("sport_mode" in cols) {
+                val dist = reader.query(
+                    "SELECT sport_mode, COUNT(*) AS c FROM $table " +
+                        "GROUP BY sport_mode ORDER BY c DESC"
+                )
+                Log.i(TAG, "  sport_mode 分布: " +
+                    dist.joinToString { "mode=${it["sport_mode"]}×${it["c"]}" })
+            }
+            for (col in listOf("display", "sync_status")) {
+                if (col !in cols) continue
+                val dist = reader.query(
+                    "SELECT $col, COUNT(*) AS c FROM $table GROUP BY $col ORDER BY c DESC"
+                )
+                Log.i(TAG, "  $col 分布: " +
+                    dist.joinToString { "${it[col]}×${it["c"]}" })
+            }
+
+            val order = listOf("start_time", "start_timestamp").firstOrNull { it in cols } ?: "1"
+            val picked = listOf(
+                "_id", "client_data_id", "start_time", "end_time",
+                "start_timestamp", "end_timestamp", "sport_mode", "sport_name",
+                "total_duration", "total_distance", "total_calories", "total_steps",
+                "display", "timezone",
+            ).filter { it in cols }
+            val rows = reader.query(
+                "SELECT ${picked.joinToString()} FROM $table ORDER BY $order DESC LIMIT 5"
+            )
+            Log.i(TAG, "  最近 5 条:")
+            rows.forEachIndexed { i, r ->
+                Log.i(TAG, "    [$i] " + picked.joinToString { "$it=${r[it]}" })
+            }
+        }
+    }
+
+    /** 运动会话的候选表，按可信度排序。 */
+    private val SPORT_TABLES = listOf(
+        "DBOneTimeSport",     // 单次运动主表：start_time / end_time / sport_mode
+        "DBTrackMetadata",    // 轨迹类运动汇总：另有 sport_name / 距离 / 卡路里
+        "DBOneTimeSportStat", // 运动统计视图
+    )
 
     private fun fmt(millis: String?): String {
         val v = millis?.toLongOrNull() ?: return "-"
