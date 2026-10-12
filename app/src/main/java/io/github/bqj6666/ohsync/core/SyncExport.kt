@@ -520,11 +520,17 @@ class SyncExport(private val context: Context, private val hc: HcClient) {
          * 这既是读取循环的范围，也是要申请的「读」权限清单 —— 两个地方必须一致，
          * 所以清单（AndroidManifest 的 READ_*）也要跟着这里改。
          * 比原脚本的「自动发现所有非空表」窄：应用里只能按类型读，没法枚举 HC 的表。
+         *
+         * 没纳入的是两类：**序列型**（StepsCadence / Speed / Power / PedalingCadence，
+         * 它们的值在 samples 列表里，得另写聚合）和与减重分析无关的
+         * （月经 / 宫颈黏液 / 性活动 / 营养摄入 / 正念）。OPPO 侧这些本来也没有数据 ——
+         * 实测 HC 里非空的只有 OHSync 写的那几类，所以不漏。
          */
         val EXPORT_TYPES: List<RecordType> = listOf(
             RecordType.STEPS, RecordType.DISTANCE,
             RecordType.ACTIVE_CALORIES, RecordType.TOTAL_CALORIES,
             RecordType.HEART_RATE, RecordType.RESTING_HEART_RATE, RecordType.HRV,
+            RecordType.BLOOD_OXYGEN,
             RecordType.SLEEP_SESSION, RecordType.EXERCISE_SESSION,
             RecordType.WEIGHT, RecordType.BODY_FAT, RecordType.LEAN_BODY_MASS,
             RecordType.BODY_WATER, RecordType.BONE_MASS, RecordType.HEIGHT,
