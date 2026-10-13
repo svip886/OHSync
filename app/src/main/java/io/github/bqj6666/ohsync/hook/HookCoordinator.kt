@@ -52,9 +52,9 @@ class HookCoordinator(private val xposed: XposedInterface) {
             reader.attach(db)
             reportTables()
             reportedNotReady = false
-            dbWaitSince = 0L
             // 拿到库时若正好到点（或用户要求过）就顺手推一次；没到点就不推 ——
             // 「OPPO 健康重启了」本身不构成同步的理由，用户设的是 1 小时。
+            // 调度线程那边的「等库」状态由它自己在下一轮清零（库已就绪时必然走到分支外）。
             val cfg = RemoteConfig.fetch()
             if (syncWanted(cfg, System.currentTimeMillis())) {
                 pushNow(withProbe = cfg?.backfillRequested == true, incremental = true)
