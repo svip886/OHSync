@@ -19,8 +19,17 @@ class HookCoordinator(private val xposed: XposedInterface) {
     private val dbAccess = DbAccess(xposed)
 
     @Volatile private var reported = false
-    @Volatile private var pushedOnce = false
-    private var lastPushAt = 0L
+
+    /**
+     * 上次「下发推送」的时刻。
+     *
+     * 两个用途：① 挡住 1.5 秒内的重复下发；② 作为同步间隔的计时基准之一
+     * （另一个是主进程持久化的 lastSyncAt，见 [syncWanted]）。
+     *
+     * 必须是成员变量而不是调度线程的局部变量 —— 局部变量会随进程重启归零，
+     * 那正是「宿主每次重启都立刻多推一次、用户设的间隔被绕过」的成因。
+     */
+    @Volatile private var lastPushAt = 0L
 
     /** 阶段一：App 创建之前。 */
     fun onPackageLoaded(cl: ClassLoader) {
@@ -43,13 +52,12 @@ class HookCoordinator(private val xposed: XposedInterface) {
             reader.attach(db)
             reportTables()
             reportedNotReady = false
-            // 拿到数据库时推一次；用户设了「仅手动」则不自动推
-            if (!pushedOnce && (RemoteConfig.fetch()?.intervalMinutes ?: 60) > 0) {
-                pushedOnce = true
-                // 也是一次增量：整窗口的活儿只该干一次，由 QueryPlan.computeSince 在
-                // 「从没同步过」（lastSyncAt=0）时自动退化成整个窗口。
-                // 这里若写死 incremental=false，每次 OPPO 健康重启都会重推八万多条。
-                pushNow(withProbe = true, incremental = true)
+            dbWaitSince = 0L
+            // 拿到库时若正好到点（或用户要求过）就顺手推一次；没到点就不推 ——
+            // 「OPPO 健康重启了」本身不构成同步的理由，用户设的是 1 小时。
+            val cfg = RemoteConfig.fetch()
+            if (syncWanted(cfg, System.currentTimeMillis())) {
+                pushNow(withProbe = cfg?.backfillRequested == true, incremental = true)
             }
         }
 
@@ -97,10 +105,12 @@ class HookCoordinator(private val xposed: XposedInterface) {
         schedulerStarted = true
 
         Thread {
-            var lastPush = 0L
             var cfg: HookConfig? = null
             var cfgAt = 0L
             var lastFetchTry = 0L
+            // 「想同步却拿不到库」从何时开始；0 = 当前没有这个诉求。
+            var dbWaitSince = 0L
+            var restarts = 0
             while (true) {
                 try {
                     // 事件通道尽早注册。放在循环里反复试是因为 Application 挂上的
@@ -122,31 +132,51 @@ class HookCoordinator(private val xposed: XposedInterface) {
                     }
 
                     val manual = manualRequest
-                    val minutes = cfg?.intervalMinutes ?: 0
-                    val due = minutes > 0 && now - lastPush >= minutes * 60_000L
-
-                    if (manual || due) {
+                    if (syncWanted(cfg, now)) {
                         if (reader.isReady()) {
                             // 手动与周期都是**增量**：整窗口只该在「第一次」干一次
                             // （QueryPlan.computeSince 发现 lastSyncAt=0 时会自动退化成
                             // 整个窗口），之后每次点「立即同步」不该把八万多条重推一遍。
                             // 更早的历史由下面的回填游标一轮轮往回铺，与增量互不干扰。
-                            pushNow(withProbe = manual, incremental = true)
-                            lastPush = System.currentTimeMillis()
+                            pushNow(
+                                withProbe = manual || cfg?.backfillRequested == true,
+                                incremental = true,
+                            )
                             manualRequest = false
-                        } else if (manual) {
-                            // 只有「用户明确要求过」才吭声。OPPO 健康有好几个进程，
-                            // 拿不到库的那些会一直空转，每 30 秒刷一行日志毫无价值
-                            // 而且把 logcat 冲掉（排查时最需要它）。
-                            Log.w(TAG, "数据库未就绪，稍后再试")
+                            dbWaitSince = 0L
+                        } else {
+                            if (dbWaitSince == 0L) dbWaitSince = now
                             // 回报一次「我收到了，但库还没开」：主进程据此知道读方还
                             // 活着，不必去重启 OPPO 健康（那是没人响应时才该做的）。
                             // 只报一次 —— 反复报会把看门狗一直喂饱，反而掩盖问题。
-                            if (!reportedNotReady) {
+                            if (manual && !reportedNotReady) {
                                 reportedNotReady = true
                                 RemoteConfig.reportReaderState(false)
                             }
+                            // 确实想同步、却一直拿不到库 —— 只有这时才值得请主进程重启 OPPO 健康。
+                            //
+                            // 早期版本是**每个拿不到库的进程无条件每 20 分钟求一次**（一轮 60 秒
+                            // × 20 轮），而 OPPO 健康有 5 个进程、其中只有主进程可能拿到库，
+                            // 于是永远在重启宿主：实测每 20 分钟一次，每次重启又让同步计时器
+                            // 归零、立刻多推一次，用户设的 1 小时就是这样被顶成「20 分钟一份」
+                            // 的（夜间 02:00→08:50 那串整齐的 21 分钟间隔就是它）。
+                            // 现在有两道闸：必须真的「想同步」，且每个进程一生最多求
+                            // [MAX_RESTARTS_PER_PROCESS] 次。
+                            if (now - dbWaitSince >= DB_WAIT_BEFORE_RESTART_MS &&
+                                restarts < MAX_RESTARTS_PER_PROCESS
+                            ) {
+                                restarts++
+                                dbWaitSince = now
+                                Log.w(
+                                    TAG,
+                                    "想同步但 ${DB_WAIT_BEFORE_RESTART_MS / 1000} 秒拿不到数据库，" +
+                                        "第 $restarts 次请求重启 OPPO 健康",
+                                )
+                                RemoteConfig.requestHealthRestart()
+                            }
                         }
+                    } else {
+                        dbWaitSince = 0L
                     }
                     waitForEvent(if (triggerRegistered) TICK_MS else REGISTER_RETRY_MS)
                 } catch (t: Throwable) {
@@ -159,6 +189,30 @@ class HookCoordinator(private val xposed: XposedInterface) {
     }
 
     @Volatile private var triggerRegistered = false
+
+    /**
+     * 现在该不该推？
+     *
+     * 三个理由，任一成立即可：
+     *   - 用户点了「立即同步」（广播设的 [manualRequest]）；
+     *   - 主进程下发的 `backfillRequested` —— 用户点过同步、半路却碰上宿主重启时，
+     *     这个标志还留在配置里，不至于白点一次；
+     *   - 到了用户设的间隔。
+     *
+     * 「到点」的基准取 `max([lastPushAt], 主进程持久化的 lastSyncAt)`。**必须带上后者**：
+     * 本进程的计时器会随进程重启归零，只看它的话宿主每次重启都会立刻多推一次，
+     * 用户设的 1 小时就废了（实测表现是每 20 分钟上传一份）。
+     * lastSyncAt 由主进程在每次推送真正结束后持久化，跨进程、跨重启都有效。
+     */
+    private fun syncWanted(cfg: HookConfig?, now: Long): Boolean {
+        if (manualRequest) return true
+        if (cfg == null) return false          // 配置取不到时保守处理：不推
+        if (cfg.backfillRequested) return true
+        val minutes = cfg.intervalMinutes
+        if (minutes <= 0) return false         // 「仅手动」
+        val anchor = maxOf(lastPushAt, cfg.lastSyncAt)
+        return anchor <= 0L || now - anchor >= minutes * 60_000L
+    }
 
     /** 注册事件通道。只需成功一次；Context 还没拿到时下一轮再试。 */
     private fun tryRegisterTrigger() {
@@ -199,10 +253,15 @@ class HookCoordinator(private val xposed: XposedInterface) {
 
     private val wakeLock = Object()
 
-    /** UI 点「同步历史数据」时也会走这里。 */
     /**
-     * @param withProbe   顺带跑一次证据探针（只在手动同步时，探针输出很啰嗦）
-     * @param incremental 只取上次同步之后的新数据；手动同步传 false 走完整窗口
+     * 下发一次推送（异步，立刻返回）。
+     *
+     * 调用方必须先过 [syncWanted]：这里只管「1.5 秒内不重复下发」，
+     * 不管「该不该同步」。
+     *
+     * @param withProbe   顺带跑一次证据探针（输出很啰嗦，只在用户明确要求时跑）
+     * @param incremental 只取上次同步之后的新数据；整窗口只在「从没同步过」时自动发生
+     *                    （见 QueryPlan.computeSince）
      */
     private fun pushNow(withProbe: Boolean, incremental: Boolean = false) {
         if (!reader.isReady()) {
@@ -211,6 +270,8 @@ class HookCoordinator(private val xposed: XposedInterface) {
         }
         val now = System.currentTimeMillis()
         if (now - lastPushAt < 1500) return
+        // 立刻记时间：它同时是同步间隔的计时基准，所以「尝试过」就要算数，
+        // 不能等推送线程跑完（那要几十秒，期间调度线程会反复重新发起）。
         lastPushAt = now
         Thread {
             runCatching {
@@ -234,5 +295,16 @@ class HookCoordinator(private val xposed: XposedInterface) {
 
         /** 兜底刷新配置的间隔（正常情况下由事件驱动）。 */
         private const val CONFIG_REFRESH_MS = 3_600_000L
+
+        /** 想同步却一直拿不到数据库，等这么久才去请主进程重启 OPPO 健康。 */
+        private const val DB_WAIT_BEFORE_RESTART_MS = 2 * 60_000L
+
+        /**
+         * 每个进程一生最多请求几次重启宿主。
+         *
+         * 用来掐断「拿不到库 → 重启 → 新进程仍拿不到 → 再重启」的无限循环。
+         * 主进程那边还有 10 分钟节流兜着，两道闸叠起来，最坏也不会变成重启风暴。
+         */
+        private const val MAX_RESTARTS_PER_PROCESS = 3
     }
 }

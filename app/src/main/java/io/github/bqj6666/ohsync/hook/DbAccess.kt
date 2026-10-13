@@ -51,17 +51,28 @@ class DbAccess(private val xposed: XposedInterface) {
      *
      * 节奏分两段，而且**永不放弃**：
      *   - 前 [FAST_TRIES] 轮每 3 秒一次，覆盖「OPPO 正常启动、稍后就开库」的常见情况；
-     *   - 之后降到每 60 秒一次，并且每隔几分钟请主进程重启一次 OPPO 健康。
+     *   - 之后降到每 60 秒一次，只安静地继续尝试。
      *
      * 早期版本试满 200 轮就整个退出 —— 那之后再出问题就彻底没人管了，
      * 用户点「立即同步」不会有任何反应（实测症状之一）。
+     *
+     * ⚠️ 这里**不再**请求重启 OPPO 健康。
+     *
+     * 原先的写法是「每 20 分钟求主进程重启一次」，理由是「OPPO 起来了却没开库」。
+     * 但本循环跑在 OPPO 健康的**每一个**进程里（实测 5 个），而绝大多数进程
+     * 永远拿不到数据库实例（库只属于主进程），于是每个无库进程都会无条件地、
+     * 每 20 分钟求一次重启，且永不停止 —— 实测表现就是 OPPO 健康被无限重启，
+     * 每次重启又让读取端的同步计时器归零、立刻多推一次，把用户设的「1 小时」
+     * 顶成了「20 分钟一份」。夜间 02:00→08:50 那串整齐的 21 分钟间隔就是它。
+     *
+     * 现在由「确实想同步却拿不到库」的那一方去求助，即 HookCoordinator 的调度
+     * 线程：只有到点了（或用户点了同步）才可能请求，且每个进程一生最多几次。
      */
     fun startFallbackLoop(classLoader: ClassLoader) {
         if (fallbackStarted) return
         fallbackStarted = true
         Thread {
             var tries = 0
-            var restarts = 0
             var interrupted = false
             while (!delivered && !interrupted) {
                 tries++
@@ -71,16 +82,6 @@ class DbAccess(private val xposed: XposedInterface) {
                     Log.e(TAG, "路 B 第 $tries 次失败", t)
                 }
                 if (delivered) break
-
-                // 进入慢速阶段后周期性求助：OPPO 健康起来了却没开数据库时，
-                // 只有把它重启一遍才会重新走完整启动流程。执行方是主进程
-                // （它才有本应用的 uid，su 授权才落在 OHSync 头上）。
-                val slowRound = tries - FAST_TRIES
-                if (tries == FAST_TRIES || (slowRound > 0 && slowRound % RESTART_EVERY_SLOW == 0)) {
-                    restarts++
-                    Log.w(TAG, "路 B 重试 $tries 轮仍未拿到库，第 $restarts 次请求重启 OPPO 健康")
-                    RemoteConfig.requestHealthRestart()
-                }
 
                 try {
                     Thread.sleep(if (tries <= FAST_TRIES) RETRY_MS else SLOW_RETRY_MS)
@@ -111,8 +112,17 @@ class DbAccess(private val xposed: XposedInterface) {
             m.isAccessible = true
             val created = m.invoke(null, ctx)
             created != null
-        }.onFailure { Log.w(TAG, "主动开库失败", it) }.getOrDefault(false)
+        }.onFailure {
+            // 只报一次。这条在拿不到库的进程里每 60 秒就会出现一次，而 OPPO 健康同时有
+            // 5 个进程 —— 一起刷能把 logcat 整个冲掉（排查时最需要的东西反而没了）。
+            if (!openFailLogged) {
+                openFailLogged = true
+                Log.w(TAG, "主动开库失败（同类失败不再重复打印）", it)
+            }
+        }.getOrDefault(false)
     }
+
+    @Volatile private var openFailLogged = false
 
     private fun tryReflection(classLoader: ClassLoader, attempt: Int) {
         val appDb = try {
@@ -169,17 +179,13 @@ class DbAccess(private val xposed: XposedInterface) {
         /** 快速阶段的轮数（约 2 分钟），之后转入慢速重试。 */
         private const val FAST_TRIES = 40
 
-        /** 慢速阶段的间隔。永不退出，所以必须放慢，别把 CPU 和电池耗掉。 */
-        private const val SLOW_RETRY_MS = 60_000L
-
         /**
-         * 慢速阶段每这么多轮请主进程重启一次 OPPO 健康。
+         * 慢速阶段的间隔。永不退出，所以必须放慢，别把 CPU 和电池耗掉。
          *
-         * 一轮 60 秒，所以是 20 分钟一次。别调太小：OPPO 健康有多个进程，每个都跑
-         * 这个循环，太小会让「重启请求」变得很吵（实际重启仍由主进程按 10 分钟节流，
-         * 请求得再勤也不会更早生效）。用户手动点同步的那条路有主进程看门狗兜着。
+         * 重启请求已从这里移除（原因见 [startFallbackLoop] 的说明），
+         * 改由 HookCoordinator 在「确实想同步却拿不到库」时发起。
          */
-        private const val RESTART_EVERY_SLOW = 20
+        private const val SLOW_RETRY_MS = 60_000L
 
         private val DB_GETTERS = setOf("getReadableDatabase", "getWritableDatabase")
 
