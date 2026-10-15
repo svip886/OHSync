@@ -56,8 +56,12 @@ class HookCoordinator(private val xposed: XposedInterface) {
             // 「OPPO 健康重启了」本身不构成同步的理由，用户设的是 1 小时。
             // 调度线程那边的「等库」状态由它自己在下一轮清零（库已就绪时必然走到分支外）。
             val cfg = RemoteConfig.fetch()
+            val requested = cfg?.backfillRequested == true
             if (syncWanted(cfg, System.currentTimeMillis())) {
-                pushNow(withProbe = cfg?.backfillRequested == true, incremental = true)
+                pushNow(
+                    withProbe = requested,
+                    overlapMs = if (requested) QueryPlan.MANUAL_OVERLAP_MS else QueryPlan.PERIODIC_OVERLAP_MS,
+                )
             }
         }
 
@@ -134,13 +138,16 @@ class HookCoordinator(private val xposed: XposedInterface) {
                     val manual = manualRequest
                     if (syncWanted(cfg, now)) {
                         if (reader.isReady()) {
-                            // 手动与周期都是**增量**：整窗口只该在「第一次」干一次
+                            // 手动与周期都是**增量**：整窗口的活儿只该在「第一次」干一次
                             // （QueryPlan.computeSince 发现 lastSyncAt=0 时会自动退化成
                             // 整个窗口），之后每次点「立即同步」不该把八万多条重推一遍。
                             // 更早的历史由下面的回填游标一轮轮往回铺，与增量互不干扰。
+                            // 用户主动要求的同步回看 7 天：手表可能离线了好几天才连上手机。
+                            val requested = manual || cfg?.backfillRequested == true
                             pushNow(
-                                withProbe = manual || cfg?.backfillRequested == true,
-                                incremental = true,
+                                withProbe = requested,
+                                overlapMs = if (requested) QueryPlan.MANUAL_OVERLAP_MS
+                                else QueryPlan.PERIODIC_OVERLAP_MS,
                             )
                             manualRequest = false
                             dbWaitSince = 0L
@@ -259,11 +266,11 @@ class HookCoordinator(private val xposed: XposedInterface) {
      * 调用方必须先过 [syncWanted]：这里只管「1.5 秒内不重复下发」，
      * 不管「该不该同步」。
      *
-     * @param withProbe   顺带跑一次证据探针（输出很啰嗦，只在用户明确要求时跑）
-     * @param incremental 只取上次同步之后的新数据；整窗口只在「从没同步过」时自动发生
-     *                    （见 QueryPlan.computeSince）
+     * @param withProbe  顺带跑一次证据探针（输出很啰嗦，只在用户明确要求时跑）
+     * @param overlapMs  增量回看窗口：用户主动要求的同步回看 7 天（手表可能离线了
+     *                   几天才连上），周期同步回看 48 小时就够
      */
-    private fun pushNow(withProbe: Boolean, incremental: Boolean = false) {
+    private fun pushNow(withProbe: Boolean, overlapMs: Long = QueryPlan.PERIODIC_OVERLAP_MS) {
         if (!reader.isReady()) {
             Log.w(TAG, "数据库未就绪，跳过推送")
             return
@@ -276,7 +283,7 @@ class HookCoordinator(private val xposed: XposedInterface) {
         Thread {
             runCatching {
                 if (withProbe) Probe.run(reader)
-                Pusher.push(reader, incremental)
+                Pusher.push(reader, overlapMs)
             }.onFailure { Log.e(TAG, "推送失败", it) }
         }.apply { isDaemon = true }.start()
     }

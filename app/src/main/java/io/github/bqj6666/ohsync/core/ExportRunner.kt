@@ -130,9 +130,10 @@ object ExportRunner {
             )
             null
         } else {
-            // 往前多留 2 天：数据是陆续到的，昨天/前天的天值可能还在变。
+            // 往前多留 4 天：数据是陆续到的，而且同步侧的增量窗口固定向过去回看 48 小时
+            // （手表晚到的数据要靠它补），所以最近几天的天值一直在变，得反复重读。
             // 起点必须落在某天 00:00，否则那天的天值会残缺。
-            LocalDate.now().minusDays(2).atStartOfDay(ZoneOffset.ofTotalSeconds(offsetSec))
+            LocalDate.now().minusDays(4).atStartOfDay(ZoneOffset.ofTotalSeconds(offsetSec))
                 .toInstant().toEpochMilli()
                 .also { Log.i(TAG, "增量读：只重读 ${Instant.ofEpochMilli(it)} 之后的记录，其余用缓存") }
         }

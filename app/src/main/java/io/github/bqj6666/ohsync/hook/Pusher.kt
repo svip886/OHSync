@@ -38,11 +38,15 @@ object Pusher {
      */
     private const val MAX_SLICES_PER_PUSH = 10
 
-    fun push(reader: TableReader, incremental: Boolean = false) {
+    /**
+     * @param overlapMs 增量窗口向过去回看多少（见 [QueryPlan.PERIODIC_OVERLAP_MS]）。
+     *        手动「立即同步」由调用方传 [QueryPlan.MANUAL_OVERLAP_MS]，回看 7 天。
+     */
+    fun push(reader: TableReader, overlapMs: Long = QueryPlan.PERIODIC_OVERLAP_MS) {
         // 从没同步过（lastSyncAt=0）时，QueryPlan 会把增量退化成整个时间窗口 ——
         // 这是唯一一次拉全量，日志里说清楚，免得看日志的人以为增量失效了。
         val firstTime = (RemoteConfig.fetch()?.lastSyncAt ?: 0L) <= 0L
-        val specs = QueryPlan.forTables(reader, incremental)
+        val specs = QueryPlan.forTables(reader, overlapMs)
         val sleep = SleepBuilder.build(reader)
         if (specs.isEmpty() && sleep.isEmpty()) {
             Log.w(TAG, "没有找到可同步的表（结构可能已变）")
@@ -104,7 +108,7 @@ object Pusher {
         if (rounds > 1) Log.i(TAG, "本次连做 $rounds 段历史回填")
 
         Log.i(TAG, "推送完成，共 $total 条" +
-            if (firstTime) "（首次，整个窗口）" else if (incremental) "（增量）" else "（全窗口）")
+            if (firstTime) "（首次，整个窗口）" else "（增量，回看 ${overlapMs / 3_600_000} 小时）")
         RemoteConfig.reportSyncDone(System.currentTimeMillis())
     }
 

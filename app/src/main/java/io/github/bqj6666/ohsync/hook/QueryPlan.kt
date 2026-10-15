@@ -60,14 +60,32 @@ internal object QueryPlan {
     @Volatile private var lowerBound: Long = 0L
     @Volatile private var upperBound: Long = Long.MAX_VALUE
 
-    private fun computeSince(incremental: Boolean): Long {
+    /**
+     * 增量窗口向过去回看多少。
+     *
+     * 为什么不能像早期那样只留 2 分钟边界重叠：**手表 → 手机端的数据是晚到的**。
+     * 昨晚 22:13 结束的运动，可能当晚 23 点后才从手表同步进 OPPO 健康的库，而增量的
+     * 游标（lastSyncAt）早已越过 22:13 —— 按「业务时间 >= 游标」去查，这条记录一辈子
+     * 都进不来。实测丢过的数据（2026-10-13/14）：
+     *   - 10-13 22:13 的自由训练：OPPO 库里有（DBOneTimeSport _id=660），HC 里整条没有；
+     *   - 10-14 22:26 爬楼机：会话行赶上了游标，但它的卡路里/心率/距离明细全部缺失；
+     *   - 10-13 的静息心率。
+     *
+     * 所以增量固定向过去多看 48 小时。重复推送由 Health Connect 按 clientRecordId
+     * upsert 幂等吸收，代价是每次同步多写一两千条（实测完全可接受），换来的是
+     * 「晚到多少都补得回来」。睡眠不受此影响 —— 它本来就按整个窗口重查。
+     */
+    const val PERIODIC_OVERLAP_MS = 48 * 3_600_000L
+
+    /** 手动「立即同步」时回看得更久，覆盖手表离线几天才连上手机的场景。 */
+    const val MANUAL_OVERLAP_MS = 7 * 86_400_000L
+
+    private fun computeSince(overlapMs: Long): Long {
         val windowStart = System.currentTimeMillis() - windowDays * 86_400_000L
-        if (!incremental) return windowStart
         val last = RemoteConfig.fetch()?.lastSyncAt ?: 0L
         // 上次同步点无效（首次运行）时退化为完整窗口
         if (last <= 0L) return windowStart
-        // 留 2 分钟重叠，避免边界上的记录被漏掉；clientRecordId 幂等，重复写不会脏
-        return maxOf(windowStart, last - 120_000L)
+        return maxOf(windowStart, last - overlapMs)
     }
 
     private val since: Long get() = lowerBound
@@ -76,15 +94,13 @@ internal object QueryPlan {
     private val upper: Long get() = upperBound
 
     /**
-     * @param incremental true 表示只取上次同步之后的新数据。**正常路径只有这一种**：
-     *        手动「立即同步」与周期推送都是增量，免得每次把整个窗口重推一遍。
-     *        从没同步过时（lastSyncAt=0）[computeSince] 会自动退化成整个时间窗口，
-     *        所以「首次拉全量、之后增量」这条规则是在这里兜住的，调用方不用判断。
-     * @param incremental false 保留给「确实要把整个窗口重读一遍」的场合（例如修完
-     *        单位/时区后做一次性回补），日常不会走到。
+     * @param overlapMs 增量窗口向过去回看多少：周期同步用 [PERIODIC_OVERLAP_MS]，
+     *        手动「立即同步」用 [MANUAL_OVERLAP_MS]（见重叠常量上的说明）。
+     *        从没同步过时（lastSyncAt=0）[computeSince] 自动退化成整个时间窗口，
+     *        「首次拉全量、之后增量」这条规则在这里兜住，调用方不用判断。
      */
-    fun forTables(reader: TableReader, incremental: Boolean = false): List<TableSpec> =
-        buildSpecs(reader, computeSince(incremental), Long.MAX_VALUE)
+    fun forTables(reader: TableReader, overlapMs: Long = PERIODIC_OVERLAP_MS): List<TableSpec> =
+        buildSpecs(reader, computeSince(overlapMs), Long.MAX_VALUE)
 
     /**
      * 回填切片：取 [before - 一段, before) 这一段的历史。
